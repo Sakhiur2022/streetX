@@ -24,6 +24,35 @@ async function compress(file) {
   } catch { return file; }
 }
 
+const toB64 = blob => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result).split(',')[1]);
+  r.onerror = () => rej(new Error('Could not read the file'));
+  r.readAsDataURL(blob);
+});
+
+async function callGemini(body) {
+  const { data, error } = await sb.functions.invoke('gemini', { body });
+  if (error) {
+    let msg = error.message;
+    try { const j = await error.context.json(); if (j?.error) msg = j.error; } catch { /* keep default */ }
+    throw new Error(msg);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data.result;
+}
+
+// Gemini, via the `gemini` Supabase Edge Function (the API key stays on the server).
+export const ai = {
+  async extract(kind, file) {
+    const blob = await compress(file);
+    const data = await toB64(blob);
+    if (data.length > 7_000_000) throw new Error('File too large (keep it under about 5 MB)');
+    return callGemini({ mode: 'extract', kind, mime_type: blob.type || file.type, image_base64: data });
+  },
+  advice: summary => callGemini({ mode: 'advice', summary }),
+};
+
 export const db = {
   // ---- auth ----
   session: async () => (await sb.auth.getSession()).data.session,
