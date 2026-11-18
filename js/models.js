@@ -39,7 +39,7 @@ const notes = () => ({ name: 'notes', label: 'Notes', type: 'textarea' });
 
 export const TYPES = {
   fuel: {
-    table: 'fuel_logs', title: 'Fuel', icon: '⛽', dateField: 'logged_on', attach: true,
+    table: 'fuel_logs', title: 'Fuel', icon: '⛽', dateField: 'logged_on', attach: true, scan: true,
     fields: [
       date(), odo(),
       { name: 'fuel_type', label: 'Fuel', type: 'select', options: [['octane', 'Octane'], ['petrol', 'Petrol']], default: 'octane' },
@@ -57,7 +57,7 @@ export const TYPES = {
   },
 
   maintenance: {
-    table: 'maintenance_logs', title: 'Service', icon: '🔧', dateField: 'logged_on', attach: true,
+    table: 'maintenance_logs', title: 'Service', icon: '🔧', dateField: 'logged_on', attach: true, scan: true,
     items: true, itemsBefore: 'notes', // one visit = several services, each with its own cost
     fields: [date(), odo(), text('vendor', 'Workshop / shop'), notes()],
     cols: [
@@ -69,7 +69,7 @@ export const TYPES = {
   },
 
   expense: {
-    table: 'expenses', title: 'Expenses', icon: '🧾', dateField: 'logged_on', attach: true,
+    table: 'expenses', title: 'Expenses', icon: '🧾', dateField: 'logged_on', attach: true, scan: true,
     fields: [
       date(), odo(false),
       { name: 'category', label: 'Category', type: 'select', options: EXP, required: true },
@@ -100,7 +100,7 @@ export const TYPES = {
   },
 
   document: {
-    table: 'documents', title: 'Documents', icon: '📄', dateField: 'expires_on', attach: true,
+    table: 'documents', title: 'Documents', icon: '📄', dateField: 'expires_on', attach: true, scan: true,
     fields: [
       { name: 'doc_type', label: 'Document', type: 'select', options: DOCS, required: true, default: 'tax_token' },
       { name: 'issued_on', label: 'Issued on', type: 'date' },
