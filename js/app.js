@@ -1,17 +1,18 @@
 // UI layer: routing, views, and one shared form flow for every log type (Template Method).
-import { db } from './db.js';
+import { db, ai } from './db.js';
+import { applyScan, itemHtml } from './scan.js';
+import { esc } from './util.js';
 import { bus } from './events.js';
 import { TYPES, OPTS, label, today, buildPayload, itemsOf } from './models.js';
 import { ruleStatus, docStatus } from './strategies.js';
 
 const $ = s => document.querySelector(s);
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const bdt = n => '৳' + Math.round(Number(n) || 0).toLocaleString('en-BD');
 const state = { vehicle: null };
 
 const PAGES = [
   ['home', 'Home'], ['fuel', 'Fuel'], ['maintenance', 'Service'], ['expense', 'Expenses'],
-  ['incident', 'Incidents'], ['document', 'Documents'], ['reminders', 'Reminders'],
+  ['incident', 'Incidents'], ['document', 'Documents'], ['reminders', 'Reminders'], ['advice', '✨ Advice'],
 ];
 
 function toast(msg) {
@@ -76,6 +77,7 @@ async function route() {
   try {
     if (page === 'home') await viewHome(view);
     else if (page === 'reminders') await viewReminders(view);
+    else if (page === 'advice') await viewAdvice(view);
     else if (TYPES[page]) await viewLog(view, page);
     else location.hash = 'home';
   } catch (e) { view.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
@@ -191,6 +193,69 @@ async function viewReminders(view) {
   });
 }
 
+// ---------- advice (Gemini) ----------
+const LEVEL = { high: 'overdue', medium: 'soon', low: 'ok' };
+
+// Only totals and history go to Gemini: no plate, email, photos or notes.
+async function buildAdviceInput() {
+  const v = state.vehicle.id;
+  const [odo, eco, rem, monthly, docs, fuel, incidents] = await Promise.all([
+    db.odometer(v), db.fuelEconomy(v), db.reminders(v), db.monthly(v),
+    db.list('document', v, 50), db.list('fuel', v, 40), db.list('incident', v, 30),
+  ]);
+  const months = [...new Set(monthly.map(m => m.month))].slice(0, 6);
+  const spend = months.map(m => ({
+    month: m.slice(0, 7),
+    ...Object.fromEntries(monthly.filter(x => x.month === m).map(x => [x.category, Math.round(Number(x.total_bdt))])),
+  }));
+  const asc = [...fuel].reverse();
+  const first = asc[0], last = asc[asc.length - 1];
+  const span = first && last ? (new Date(last.logged_on) - new Date(first.logged_on)) / 864e5 : 0;
+  return {
+    today: today(),
+    car: { make: state.vehicle.make, model: state.vehicle.model, year: state.vehicle.year },
+    odometer_km: odo,
+    avg_km_per_month: span >= 30 ? Math.round((last.odometer_km - first.odometer_km) / span * 30) : null,
+    km_per_l_recent: eco.slice(0, 12).map(r => ({ date: r.end_date, km_per_l: Number(r.km_per_l), km: r.km })),
+    fuel_price_per_l_recent: fuel.slice(0, 12).map(r => ({ date: r.logged_on, bdt: Number(r.price_per_liter), type: r.fuel_type })),
+    monthly_spend_bdt: spend,
+    service_status: rem.map(r => ({ item: r.title, last_done_km: r.last_odometer_km, last_done_on: r.last_done_on, status: ruleStatus(r).text })),
+    documents: docs.slice(0, 10).map(d => ({ type: d.doc_type, expires_on: d.expires_on, status: docStatus(d).when })),
+    incidents_recent: incidents.slice(0, 10).map(i => ({ date: i.occurred_on, what: String(i.description).slice(0, 120), repair_bdt: Number(i.repair_cost_bdt) })),
+  };
+}
+
+function renderAdvice(r) {
+  const list = arr => `<ul class="list">${arr.map(a =>
+    `<li class="${LEVEL[a.level] ?? 'never'}"><span><b>${esc(a.title)}</b><br><span class="mut">${esc(a.detail)}</span></span></li>`).join('')}</ul>`;
+  return `<p>${esc(r.summary)}</p>
+    ${r.alerts.length ? `<h2>Needs attention</h2>${list(r.alerts)}` : ''}
+    ${r.savings.length ? `<h2>Ways to spend less</h2>${list(r.savings.map(s => ({ ...s, level: 'low' })))}` : ''}
+    ${r.anomalies.length ? `<h2>Odd things in your data</h2>${list(r.anomalies.map(s => ({ ...s, level: 'medium' })))}` : ''}
+    <p class="mut">Generated ${esc(r.at)}</p>`;
+}
+
+async function viewAdvice(view) {
+  view.innerHTML = `
+    <h2>✨ Advice</h2>
+    <p class="mut">Sends only totals and service history to Gemini. It is not a mechanic: confirm anything safety-related with your workshop.</p>
+    <div class="row"><button id="run">Analyse my car</button></div>
+    <div id="out"></div>`;
+  const out = $('#out');
+  if (state.advice) out.innerHTML = renderAdvice(state.advice); // kept in memory so tab switches don't spend quota
+  $('#run').onclick = async () => {
+    const btn = $('#run');
+    btn.disabled = true;
+    btn.textContent = 'Analysing…';
+    try {
+      const r = await ai.advice(await buildAdviceInput());
+      state.advice = { ...r, at: new Date().toLocaleString() };
+      out.innerHTML = renderAdvice(state.advice);
+    } catch (e) { out.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+    finally { btn.disabled = false; btn.textContent = 'Analyse my car'; }
+  };
+}
+
 // ---------- shared form flow: render -> validate -> save -> upload -> notify ----------
 function fieldHtml(f, ctx, row) {
   const def = row ? row[f.name] : (typeof f.default === 'function' ? f.default(ctx) : f.default);
@@ -203,23 +268,6 @@ function fieldHtml(f, ctx, row) {
   if (f.type === 'checkbox') return `<label class="chk"><input type="checkbox" name="${f.name}" ${def ? 'checked' : ''}> ${lbl}</label>`;
   const num = f.type === 'number' ? `step="${f.step ?? 'any'}" min="0" inputmode="${f.step === 1 ? 'numeric' : 'decimal'}"` : '';
   return `<label>${lbl}<input type="${f.type}" name="${f.name}" value="${esc(def ?? '')}" ${num} ${req}></label>`;
-}
-
-// One service line inside a visit (category, details, cost, warranty).
-function itemHtml(it = {}) {
-  const auto = it.category ? label(OPTS.MAINT, it.category) : '';
-  return `
-    <div class="item">
-      <div class="row2">
-        <select name="i_category">${OPTS.MAINT.map(([v, l]) => `<option value="${v}" ${v === it.category ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
-        <input name="i_title" placeholder="Details (optional)" value="${esc(it.title && it.title !== auto ? it.title : '')}">
-      </div>
-      <div class="row2">
-        <label class="sm">Cost (৳)<input name="i_cost" type="number" step="0.01" min="0" inputmode="decimal" value="${esc(it.cost_bdt ?? '')}"></label>
-        <label class="sm">Warranty until<input name="i_warranty" type="date" value="${esc(it.warranty_until ?? '')}"></label>
-        <button type="button" class="link danger" data-rm title="Remove">✕</button>
-      </div>
-    </div>`;
 }
 
 function collectItems(form) {
@@ -247,6 +295,7 @@ async function openForm(type, row = null) {
       <h3>${t.icon} ${row ? 'Edit' : 'Add'} ${esc(t.title)}</h3>
       ${t.fields.map(f => (f.name === t.itemsBefore ? itemsBlock : '') + fieldHtml(f, ctx, row)).join('')}
       ${t.attach ? `<label>${row ? 'Add more invoice photos / PDF' : 'Invoice photos / PDF'}<input type="file" name="_files" accept="image/*,application/pdf" multiple></label>` : ''}
+      ${t.scan ? '<div class="row"><button type="button" class="ghost" id="scan">✨ Fill from invoice</button></div>' : ''}
       <div class="row"><button type="button" class="ghost" id="cancel">Cancel</button><button id="save">Save</button></div>
       <p class="err" id="ferr"></p>
     </form>`;
@@ -268,6 +317,22 @@ async function openForm(type, row = null) {
       else item.querySelectorAll('input').forEach(i => { i.value = ''; }); // keep at least one line
       refresh();
     });
+  }
+
+  if (t.scan) {
+    $('#scan').onclick = async () => {
+      const file = form.elements['_files'].files[0];
+      if (!file) return toast('Choose an invoice photo first');
+      const btn = $('#scan');
+      btn.disabled = true;
+      btn.textContent = 'Scanning…';
+      $('#ferr').textContent = '';
+      try {
+        const filled = applyScan(form, type, await ai.extract(type, file));
+        toast(filled.length ? 'Filled from invoice. Check every value before saving.' : 'Nothing readable found on that image');
+      } catch (e) { $('#ferr').textContent = e.message; }
+      finally { btn.disabled = false; btn.textContent = '✨ Fill from invoice'; }
+    };
   }
 
   form.onsubmit = async e => {
