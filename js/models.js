@@ -24,6 +24,8 @@ const DOCS = [
 ];
 export const OPTS = { MAINT, EXP, DOCS };
 export const label = (opts, v) => opts.find(o => o[0] === v)?.[1] ?? v;
+export const itemsOf = r => [...(r.maintenance_items ?? [])].sort((a, b) => a.position - b.position);
+const visitTotal = r => itemsOf(r).reduce((a, i) => a + Number(i.cost_bdt || 0), 0);
 
 // Field helpers. `default` may be a value or a function(ctx).
 const date = (name = 'logged_on', lbl = 'Date') => ({ name, label: lbl, type: 'date', required: true, default: today });
@@ -56,20 +58,14 @@ export const TYPES = {
 
   maintenance: {
     table: 'maintenance_logs', title: 'Service', icon: '🔧', dateField: 'logged_on', attach: true,
-    fields: [
-      date(), odo(),
-      { name: 'category', label: 'Category', type: 'select', options: MAINT, required: true },
-      text('title', 'What was done', true),
-      money('cost_bdt', 'Cost (৳)'),
-      text('vendor', 'Workshop / shop'),
-      { name: 'warranty_until', label: 'Warranty until', type: 'date' },
-      notes(),
-    ],
+    items: true, itemsBefore: 'notes', // one visit = several services, each with its own cost
+    fields: [date(), odo(), text('vendor', 'Workshop / shop'), notes()],
     cols: [
-      ['Date', r => r.logged_on], ['Odo', r => r.odometer_km], ['Type', r => label(MAINT, r.category)],
-      ['Work', r => r.title], ['৳', r => r.cost_bdt], ['Shop', r => r.vendor ?? ''],
+      ['Date', r => r.logged_on], ['Odo', r => r.odometer_km], ['Shop', r => r.vendor ?? ''],
+      ['Services', r => itemsOf(r).map(i => `${i.title} ৳${i.cost_bdt}`).join(' · '), 'wrap'],
+      ['Total ৳', r => visitTotal(r)],
     ],
-    cost: r => r.cost_bdt,
+    cost: r => visitTotal(r),
   },
 
   expense: {
@@ -119,13 +115,14 @@ export const TYPES = {
   },
 };
 
-// Form data -> DB row. Empty values are omitted so DB defaults apply.
-export function buildPayload(type, fd, vehicleId) {
+// Form data -> DB row. New rows omit empty values so DB defaults apply;
+// edits send null for cleared fields so they really get cleared.
+export function buildPayload(type, fd, vehicleId, edit = false) {
   const out = { vehicle_id: vehicleId };
   for (const f of TYPES[type].fields) {
     if (f.type === 'checkbox') { out[f.name] = fd.get(f.name) === 'on'; continue; }
     const v = fd.get(f.name);
-    if (v === null || v === '') continue;
+    if (v === null || v === '') { if (edit) out[f.name] = null; continue; }
     out[f.name] = f.type === 'number' ? Number(v) : v;
   }
   return out;
