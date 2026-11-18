@@ -1,7 +1,7 @@
 // UI layer: routing, views, and one shared form flow for every log type (Template Method).
 import { db } from './db.js';
 import { bus } from './events.js';
-import { TYPES, OPTS, label, today, buildPayload } from './models.js';
+import { TYPES, OPTS, label, today, buildPayload, itemsOf } from './models.js';
 import { ruleStatus, docStatus } from './strategies.js';
 
 const $ = s => document.querySelector(s);
@@ -151,14 +151,15 @@ async function viewLog(view, type) {
     <p class="mut">${rows.length} entries · ${bdt(total)}</p>
     <div class="tbl"><table>
       <thead><tr>${t.cols.map(c => `<th>${esc(c[0])}</th>`).join('')}<th></th></tr></thead>
-      <tbody>${rows.map(r => `<tr>${t.cols.map(c => `<td>${esc(c[1](r))}</td>`).join('')}
-        <td class="act">${att[r.id] ? `<button class="link" data-att="${r.id}">📎${att[r.id].length}</button>` : ''}<button class="link danger" data-del="${r.id}">✕</button></td></tr>`).join('')
+      <tbody>${rows.map(r => `<tr>${t.cols.map(c => `<td${c[2] ? ` class="${c[2]}"` : ''}>${esc(c[1](r))}</td>`).join('')}
+        <td class="act">${att[r.id] ? `<button class="link" data-att="${r.id}">📎${att[r.id].length}</button>` : ''}<button class="link" data-edit="${r.id}">✎</button><button class="link danger" data-del="${r.id}">✕</button></td></tr>`).join('')
         || '<tr><td colspan="9" class="mut">No entries yet.</td></tr>'}</tbody>
     </table></div>`;
 
   $('#add').onclick = () => openForm(type);
   $('#csv').onclick = () => exportCsv(type, rows);
   view.querySelectorAll('[data-att]').forEach(b => b.onclick = () => showFiles(att[b.dataset.att]));
+  view.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openForm(type, rows.find(r => r.id === b.dataset.edit)));
   view.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
     if (!confirm('Delete this entry and its files?')) return;
     try { await db.remove(type, rows.find(r => r.id === b.dataset.del)); toast('Deleted'); }
@@ -191,39 +192,93 @@ async function viewReminders(view) {
 }
 
 // ---------- shared form flow: render -> validate -> save -> upload -> notify ----------
-function fieldHtml(f, ctx) {
-  const def = typeof f.default === 'function' ? f.default(ctx) : f.default;
+function fieldHtml(f, ctx, row) {
+  const def = row ? row[f.name] : (typeof f.default === 'function' ? f.default(ctx) : f.default);
   const req = f.required ? 'required' : '';
   const lbl = esc(f.label);
   if (f.type === 'select') {
     return `<label>${lbl}<select name="${f.name}" ${req}>${f.options.map(([v, l]) => `<option value="${v}" ${v === def ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
   }
-  if (f.type === 'textarea') return `<label>${lbl}<textarea name="${f.name}" rows="2" ${req}></textarea></label>`;
+  if (f.type === 'textarea') return `<label>${lbl}<textarea name="${f.name}" rows="2" ${req}>${esc(row ? (def ?? '') : '')}</textarea></label>`;
   if (f.type === 'checkbox') return `<label class="chk"><input type="checkbox" name="${f.name}" ${def ? 'checked' : ''}> ${lbl}</label>`;
   const num = f.type === 'number' ? `step="${f.step ?? 'any'}" min="0" inputmode="${f.step === 1 ? 'numeric' : 'decimal'}"` : '';
   return `<label>${lbl}<input type="${f.type}" name="${f.name}" value="${esc(def ?? '')}" ${num} ${req}></label>`;
 }
 
-async function openForm(type) {
+// One service line inside a visit (category, details, cost, warranty).
+function itemHtml(it = {}) {
+  const auto = it.category ? label(OPTS.MAINT, it.category) : '';
+  return `
+    <div class="item">
+      <div class="row2">
+        <select name="i_category">${OPTS.MAINT.map(([v, l]) => `<option value="${v}" ${v === it.category ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+        <input name="i_title" placeholder="Details (optional)" value="${esc(it.title && it.title !== auto ? it.title : '')}">
+      </div>
+      <div class="row2">
+        <label class="sm">Cost (৳)<input name="i_cost" type="number" step="0.01" min="0" inputmode="decimal" value="${esc(it.cost_bdt ?? '')}"></label>
+        <label class="sm">Warranty until<input name="i_warranty" type="date" value="${esc(it.warranty_until ?? '')}"></label>
+        <button type="button" class="link danger" data-rm title="Remove">✕</button>
+      </div>
+    </div>`;
+}
+
+function collectItems(form) {
+  return [...form.querySelectorAll('.item')].map(el => {
+    const g = n => el.querySelector(`[name="${n}"]`).value;
+    const category = g('i_category');
+    return {
+      category, title: g('i_title').trim() || label(OPTS.MAINT, category),
+      cost_bdt: Number(g('i_cost') || 0), warranty_until: g('i_warranty') || null,
+    };
+  });
+}
+
+async function openForm(type, row = null) {
   const t = TYPES[type], dlg = $('#dlg');
-  const ctx = { odometer: await db.odometer(state.vehicle.id) };
+  const ctx = { odometer: row ? 0 : await db.odometer(state.vehicle.id) };
+  const items = t.items ? (row && itemsOf(row).length ? itemsOf(row) : [{}]) : [];
+  const itemsBlock = t.items
+    ? `<h3>Services done</h3><div id="items">${items.map(itemHtml).join('')}</div>
+       <div class="row"><button type="button" class="ghost" id="addItem">+ Add another service</button></div>
+       <p class="total" id="itotal"></p>`
+    : '';
   dlg.innerHTML = `
     <form id="f">
-      <h3>${t.icon} Add ${esc(t.title)}</h3>
-      ${t.fields.map(f => fieldHtml(f, ctx)).join('')}
-      ${t.attach ? '<label>Invoice photos / PDF<input type="file" name="_files" accept="image/*,application/pdf" multiple></label>' : ''}
+      <h3>${t.icon} ${row ? 'Edit' : 'Add'} ${esc(t.title)}</h3>
+      ${t.fields.map(f => (f.name === t.itemsBefore ? itemsBlock : '') + fieldHtml(f, ctx, row)).join('')}
+      ${t.attach ? `<label>${row ? 'Add more invoice photos / PDF' : 'Invoice photos / PDF'}<input type="file" name="_files" accept="image/*,application/pdf" multiple></label>` : ''}
       <div class="row"><button type="button" class="ghost" id="cancel">Cancel</button><button id="save">Save</button></div>
       <p class="err" id="ferr"></p>
     </form>`;
+  const form = $('#f');
   $('#cancel').onclick = () => dlg.close();
-  $('#f').onsubmit = async e => {
+
+  if (t.items) {
+    const refresh = () => {
+      const sum = [...form.querySelectorAll('[name="i_cost"]')].reduce((a, el) => a + Number(el.value || 0), 0);
+      $('#itotal').textContent = `Total ৳${sum.toLocaleString('en-BD')}`;
+    };
+    refresh();
+    form.addEventListener('input', refresh);
+    $('#addItem').onclick = () => $('#items').insertAdjacentHTML('beforeend', itemHtml());
+    form.addEventListener('click', e => {
+      if (!e.target.matches('[data-rm]')) return;
+      const item = e.target.closest('.item');
+      if (form.querySelectorAll('.item').length > 1) item.remove();
+      else item.querySelectorAll('input').forEach(i => { i.value = ''; }); // keep at least one line
+      refresh();
+    });
+  }
+
+  form.onsubmit = async e => {
     e.preventDefault();
     const btn = $('#save');
     btn.disabled = true;
     try {
-      const fd = new FormData(e.target);
+      const fd = new FormData(form);
       const files = fd.getAll('_files').filter(x => x.size);
-      const { uploadError } = await db.add(type, buildPayload(type, fd, state.vehicle.id), files);
+      const payload = buildPayload(type, fd, state.vehicle.id, !!row);
+      const { uploadError } = await db.save(type, { id: row?.id, payload, items: t.items ? collectItems(form) : [], files });
       dlg.close();
       toast(uploadError ? `Saved, but upload failed: ${uploadError.message}` : 'Saved');
     } catch (err) {
@@ -238,20 +293,36 @@ async function showFiles(paths) {
   const dlg = $('#dlg');
   try {
     const items = await db.signedUrls(paths);
-    dlg.innerHTML = `<div class="files">${items.map((d, i) => /\.pdf$/i.test(d.path ?? paths[i])
-      ? `<a href="${esc(d.signedUrl)}" target="_blank" rel="noopener">Open PDF ${i + 1}</a>`
-      : `<a href="${esc(d.signedUrl)}" target="_blank" rel="noopener"><img src="${esc(d.signedUrl)}" alt="Invoice ${i + 1}"></a>`).join('')}</div>
+    dlg.innerHTML = `<div class="files">${items.map((d, i) => {
+      const p = d.path ?? paths[i];
+      const shown = /\.pdf$/i.test(p)
+        ? `<a href="${esc(d.signedUrl)}" target="_blank" rel="noopener">Open PDF ${i + 1}</a>`
+        : `<a href="${esc(d.signedUrl)}" target="_blank" rel="noopener"><img src="${esc(d.signedUrl)}" alt="Invoice ${i + 1}"></a>`;
+      return `<div>${shown}<button class="link danger" data-rmf="${esc(p)}">Remove file</button></div>`;
+    }).join('')}</div>
       <div class="row"><button class="ghost" id="cancel">Close</button></div>`;
     $('#cancel').onclick = () => dlg.close();
+    dlg.querySelectorAll('[data-rmf]').forEach(b => b.onclick = async () => {
+      if (!confirm('Remove this file?')) return;
+      try { await db.removeFile(b.dataset.rmf); dlg.close(); toast('File removed'); }
+      catch (e) { toast(e.message); }
+    });
     dlg.showModal();
   } catch (e) { toast(e.message); }
 }
 
 function exportCsv(type, rows) {
-  if (!rows.length) return toast('Nothing to export');
-  const keys = Object.keys(rows[0]);
+  // Service visits export one line per service.
+  const data = TYPES[type].items
+    ? rows.flatMap(r => itemsOf(r).map(i => ({
+        logged_on: r.logged_on, odometer_km: r.odometer_km, vendor: r.vendor,
+        category: i.category, title: i.title, cost_bdt: i.cost_bdt, warranty_until: i.warranty_until, notes: r.notes,
+      })))
+    : rows;
+  if (!data.length) return toast('Nothing to export');
+  const keys = Object.keys(data[0]);
   const cell = v => `"${String(v !== null && typeof v === 'object' ? JSON.stringify(v) : v ?? '').replace(/"/g, '""')}"`;
-  const csv = '\uFEFF' + [keys.join(','), ...rows.map(r => keys.map(k => cell(r[k])).join(','))].join('\n');
+  const csv = '\uFEFF' + [keys.join(','), ...data.map(r => keys.map(k => cell(r[k])).join(','))].join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
   a.download = `${TYPES[type].table}-${today()}.csv`;
