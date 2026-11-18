@@ -45,11 +45,26 @@ export const db = {
   // ---- generic log CRUD (fuel, maintenance, expense, incident, document) ----
   list: (type, vehicleId, limit = 500) => {
     const t = TYPES[type];
-    return ok(sb.from(t.table).select('*').eq('vehicle_id', vehicleId)
+    return ok(sb.from(t.table).select(t.items ? '*, maintenance_items(*)' : '*').eq('vehicle_id', vehicleId)
       .order(t.dateField, { ascending: false }).order('created_at', { ascending: false }).limit(limit));
   },
-  async add(type, payload, files = []) {
-    const [row] = await ok(sb.from(TYPES[type].table).insert(payload).select());
+  // Create or edit. Service visits go through one RPC so header + items save atomically.
+  async save(type, { id = null, payload, items = [], files = [] }) {
+    const t = TYPES[type];
+    let row;
+    if (type === 'maintenance') {
+      const newId = await ok(sb.rpc('save_service_visit', {
+        p_id: id, p_vehicle: payload.vehicle_id, p_logged_on: payload.logged_on,
+        p_odometer_km: payload.odometer_km, p_vendor: payload.vendor ?? null,
+        p_notes: payload.notes ?? null, p_items: items,
+      }));
+      row = { id: newId, vehicle_id: payload.vehicle_id };
+    } else if (id) {
+      [row] = await ok(sb.from(t.table).update(payload).eq('id', id).select());
+    } else {
+      [row] = await ok(sb.from(t.table).insert(payload).select());
+    }
+    if (!row) throw new Error('Entry not found');
     let uploadError = null;
     if (files.length) {
       try { await db.attach(type, row, files); } catch (e) { uploadError = e; }
@@ -91,6 +106,11 @@ export const db = {
     return m;
   },
   signedUrls: paths => ok(sb.storage.from(BUCKET).createSignedUrls(paths, 3600)),
+  async removeFile(path) {
+    await ok(sb.storage.from(BUCKET).remove([path]));
+    await ok(sb.from('attachments').delete().eq('storage_path', path));
+    bus.emit('data:changed', {});
+  },
 
   // ---- views ----
   async odometer(vid) {
