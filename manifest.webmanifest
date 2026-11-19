@@ -3,8 +3,8 @@
   "short_name": "Car Tracker",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#0e1116",
-  "theme_color": "#0f766e",
+  "background_color": "#e4d6b4",
+  "theme_color": "#1c5a55",
   "icons": [
     { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
