@@ -1,6 +1,6 @@
 // Network-first for same-origin files, cache as offline fallback.
 // Supabase requests are cross-origin and never touched here.
-const CACHE = 'car-tracker-v1';
+const CACHE = 'car-tracker-v2';
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(['./', 'index.html', 'css/style.css', 'js/app.js'])));
