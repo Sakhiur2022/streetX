@@ -7,14 +7,12 @@ export function itemHtml(it = {}) {
   const auto = it.category ? label(OPTS.MAINT, it.category) : '';
   return `
     <div class="item">
-      <div class="row2">
-        <select name="i_category">${OPTS.MAINT.map(([v, l]) => `<option value="${v}" ${v === it.category ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
-        <input name="i_title" placeholder="Details (optional)" value="${esc(it.title && it.title !== auto ? it.title : '')}">
-      </div>
+      <select name="i_category" aria-label="Service type">${OPTS.MAINT.map(([v, l]) => `<option value="${v}" ${v === it.category ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+      <input name="i_title" aria-label="Details" placeholder="Details (optional)" value="${esc(it.title && it.title !== auto ? it.title : '')}">
       <div class="row2">
         <label class="sm">Cost (৳)<input name="i_cost" type="number" step="0.01" min="0" inputmode="decimal" value="${esc(it.cost_bdt ?? '')}"></label>
         <label class="sm">Warranty until<input name="i_warranty" type="date" value="${esc(it.warranty_until ?? '')}"></label>
-        <button type="button" class="link danger" data-rm title="Remove">✕</button>
+        <button type="button" class="link danger" data-rm title="Remove" aria-label="Remove this service">✕</button>
       </div>
     </div>`;
 }
