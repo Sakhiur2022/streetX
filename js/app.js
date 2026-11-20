@@ -142,10 +142,10 @@ async function viewHome(view) {
   const items = [];
   OPTS.DOCS.map(o => o[0]).forEach(k => {
     const d = latest[k];
-    if (d) { const s = docStatus(d); items.push({ title: label(OPTS.DOCS, k), text: s.text, level: s.level, rank: s.rank }); }
+    if (d) { const s = docStatus(d); items.push({ title: label(OPTS.DOCS, k), text: s.text, level: s.level, rank: s.rank, log: s.level === 'ok' ? null : k }); }
     else if (k === 'tax_token' || k === 'fitness') items.push({ title: label(OPTS.DOCS, k), text: 'Not logged yet', level: 'never', rank: 2, log: k });
   });
-  rem.forEach(r => { const s = ruleStatus(r); if (s.level !== 'ok') items.push({ title: r.title, text: s.text, level: s.level, rank: s.rank }); });
+  rem.forEach(r => { const s = ruleStatus(r); if (s.level !== 'ok') items.push({ title: r.title, text: s.text, level: s.level, rank: s.rank, svc: r.category }); });
   items.sort((a, b) => a.rank - b.rank);
   const shown = items.slice(0, 8);
 
@@ -195,7 +195,11 @@ async function viewHome(view) {
     <ul class="tickets">${shown.map(it => `
       <li class="tk ${it.level}">
         <div><b>${esc(it.title)}</b><span>${esc(it.text)}</span></div>
-        ${it.log ? `<button type="button" class="mini" data-log="${it.log}">Log it</button>` : `<span class="stamp ${it.level}">${STAMP[it.level]}</span>`}
+        <div class="tk-r">
+          ${it.log && it.level === 'never' ? '' : `<span class="stamp ${it.level}">${STAMP[it.level]}</span>`}
+          ${it.log ? `<button type="button" class="mini" data-log="${it.log}">${it.level === 'never' ? 'Log it' : 'Renew'}</button>`
+            : it.svc ? `<button type="button" class="mini" data-svc="${it.svc}">Log it</button>` : ''}
+        </div>
       </li>`).join('')}</ul>
     ${items.length > shown.length ? `<a class="more-link" href="#reminders">See all service intervals</a>` : ''}
 
@@ -206,6 +210,7 @@ async function viewHome(view) {
 
   view.querySelectorAll('[data-add]').forEach(b => b.onclick = () => openForm(b.dataset.add));
   view.querySelectorAll('[data-log]').forEach(b => b.onclick = () => openForm('document', null, { doc_type: b.dataset.log }));
+  view.querySelectorAll('[data-svc]').forEach(b => b.onclick = () => openForm('maintenance', null, { items: [{ category: b.dataset.svc }] }));
   // The one orchestrated moment: needles sweep to their readings.
   requestAnimationFrame(() => requestAnimationFrame(() => view.querySelector('.cluster')?.classList.add('live')));
 }
@@ -339,8 +344,8 @@ async function viewAdvice(view) {
     <h1>Advice</h1>
     <p class="sum">Sends only totals and service history to Gemini. It is not a mechanic: confirm brake, hybrid and safety work with your workshop.</p>
     <button type="button" id="run">Analyse my car</button>
-    <div id="out"></div>`;
-  const out = $('#out');
+    <div id="advice-out"></div>`;
+  const out = $('#advice-out');
   if (state.advice) out.innerHTML = renderAdvice(state.advice); // kept in memory so tab switches don't spend quota
   $('#run').onclick = async () => {
     const btn = $('#run');
@@ -386,10 +391,15 @@ function collectItems(form) {
 async function openForm(type, row = null, preset = {}) {
   const t = TYPES[type];
   const ctx = { odometer: row ? 0 : await db.odometer(state.vehicle.id), preset };
-  const items = t.items ? (row && itemsOf(row).length ? itemsOf(row) : [{}]) : [];
+  const items = t.items ? (row ? (itemsOf(row).length ? itemsOf(row) : [{}]) : (preset.items?.length ? preset.items : [{}])) : [];
   const itemsBlock = t.items
     ? `<h3 class="sub">Services done</h3><div id="items">${items.map(itemHtml).join('')}</div>
        <div class="row"><button type="button" class="ghost sm" id="addItem">${icon('plus', 18)}<span>Add another service</span></button></div>
+       <div class="chips">
+         <button type="button" class="chip" data-quick="engine_air_filter_clean">${icon('plus', 16)}<span>Engine filter cleaned</span></button>
+         <button type="button" class="chip" data-quick="cabin_ac_filter_clean">${icon('plus', 16)}<span>Cabin filter cleaned</span></button>
+       </div>
+       <p class="hint">Cleaned with compressed air: blow from the clean side outward at low pressure. Replace the filter if it is torn, oily or still dirty.</p>
        <p class="total" id="itotal"></p>`
     : '';
   const dlg = openSheet(`
@@ -415,6 +425,15 @@ async function openForm(type, row = null, preset = {}) {
     form.addEventListener('input', refresh);
     $('#addItem').onclick = () => $('#items').insertAdjacentHTML('beforeend', itemHtml());
     form.addEventListener('click', e => {
+      const q = e.target.closest('[data-quick]');
+      if (q) { // chip: add a pre-filled line, reusing the first line if it is still empty
+        const box = $('#items'), rows = box.querySelectorAll('.item');
+        const blank = rows.length === 1 && !rows[0].querySelector('[name=i_title]').value && !rows[0].querySelector('[name=i_cost]').value;
+        const html = itemHtml({ category: q.dataset.quick, cost_bdt: 0 });
+        if (blank) box.innerHTML = html; else box.insertAdjacentHTML('beforeend', html);
+        refresh();
+        return;
+      }
       const rm = e.target.closest('[data-rm]');
       if (!rm) return;
       const item = rm.closest('.item');
@@ -512,7 +531,7 @@ async function boot() {
   route();
 }
 
-$('#out').onclick = () => db.signOut();
+$('#signout').onclick = () => db.signOut();
 db.onAuth(evt => { if (evt === 'SIGNED_OUT') location.reload(); });
 window.addEventListener('hashchange', route);
 bus.on('data:changed', route);
