@@ -7,7 +7,8 @@ export const today = () => new Date().toLocaleDateString('en-CA'); // local YYYY
 
 const MAINT = [
   ['oil_change', 'Oil change (mobil)'], ['engine', 'Engine work'],
-  ['engine_air_filter', 'Engine air filter'], ['cabin_ac_filter', 'Cabin AC filter'],
+  ['engine_air_filter', 'Engine air filter: replaced'], ['engine_air_filter_clean', 'Engine air filter: cleaned (air)'],
+  ['cabin_ac_filter', 'Cabin AC filter: replaced'], ['cabin_ac_filter_clean', 'Cabin AC filter: cleaned (air)'],
   ['ac_service', 'AC service'], ['tyre_change', 'Tyre change'],
   ['tyre_rotation', 'Tyre rotation'], ['tyre_pressure', 'Tyre air (front/back)'],
   ['battery_12v', '12V battery'], ['hybrid_system', 'Hybrid system'],
