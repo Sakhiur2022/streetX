@@ -29,7 +29,7 @@ class HttpError extends Error {
 }
 
 // ---------- allowed values (keep in sync with schema.sql) ----------
-const MAINT = ['oil_change', 'engine', 'engine_air_filter', 'cabin_ac_filter', 'ac_service', 'tyre_change',
+const MAINT = ['oil_change', 'engine', 'engine_air_filter', 'engine_air_filter_clean', 'cabin_ac_filter', 'cabin_ac_filter_clean', 'ac_service', 'tyre_change',
   'tyre_rotation', 'tyre_pressure', 'battery_12v', 'hybrid_system', 'brake', 'electrical', 'lights',
   'coolant', 'transmission', 'other'];
 const EXP = ['parking', 'toll', 'fine', 'wash', 'accessory', 'other'];
@@ -82,6 +82,8 @@ const KINDS: Record<string, { prompt: string; schema: unknown; clean: (r: any) =
   maintenance: {
     prompt: 'This is a workshop invoice or job card. List every separate service or part line as its own item ' +
       'with its own price. category must be one of: ' + MAINT.join(', ') + ' (use "other" if unsure). ' +
+      'Use engine_air_filter_clean or cabin_ac_filter_clean when the line says the filter was cleaned or blown with air; ' +
+      'use engine_air_filter or cabin_ac_filter only when it was replaced. ' +
       'title = short description as written. vendor = workshop name. odometer_km = mileage if written. ' +
       'total_cost_bdt = the printed grand total, if any.',
     schema: obj({
