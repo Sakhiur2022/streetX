@@ -49,14 +49,14 @@ export function odometer(km, digits = 6) {
 }
 
 // values: oldest -> newest. Returns '' when there is nothing to draw.
-export function sparkline(values, { w = 300, h = 64 } = {}) {
+export function sparkline(values, { w = 300, h = 64, label = 'Trend', unit = '', digits = 1 } = {}) {
   if (values.length < 2) return '';
   const min = Math.min(...values), max = Math.max(...values), pad = 8;
   const x = i => pad + i * (w - 2 * pad) / (values.length - 1);
   const y = v => (max === min ? h / 2 : h - pad - (v - min) * (h - 2 * pad) / (max - min));
   const pts = values.map((v, i) => `${f(x(i))},${f(y(v))}`);
   const lastX = x(values.length - 1), lastY = y(values[values.length - 1]);
-  return `<svg class="spark" viewBox="0 0 ${w} ${h}" role="img" aria-label="Fuel economy trend, latest ${values[values.length - 1].toFixed(1)} km per litre">
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(label)}, latest ${values[values.length - 1].toFixed(digits)} ${esc(unit)}">
     <polygon class="spark-area" points="${f(pad)},${h - pad} ${pts.join(' ')} ${f(lastX)},${h - pad}"/>
     <polyline class="spark-line" points="${pts.join(' ')}"/>
     <circle class="spark-dot" cx="${f(lastX)}" cy="${f(lastY)}" r="4.5"/>
