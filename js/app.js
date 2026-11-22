@@ -7,6 +7,7 @@ import { applyScan, itemHtml } from './scan.js';
 import { esc, bdt, dateParts, monthLong } from './util.js';
 import { icon } from './icons.js';
 import { gauge, odometer, sparkline, spendBars } from './viz.js';
+import { detailHtml } from './detail.js';
 
 const $ = s => document.querySelector(s);
 const state = { vehicle: null, advice: null };
@@ -156,7 +157,7 @@ async function viewHome(view) {
     ...Object.fromEntries(cats.map(([k]) => [k, sum(x => x.month === m && x.category === k)])),
   }));
   const trend = [...eco].reverse().slice(-12).map(r => Number(r.km_per_l));
-  const spark = sparkline(trend);
+  const spark = sparkline(trend, { label: 'Fuel economy trend', unit: 'km per litre' });
 
   view.innerHTML = `
     <div class="quick">
@@ -216,19 +217,26 @@ async function viewHome(view) {
 }
 
 // ---------- log pages ----------
+const loadSort = type => { try { return localStorage.getItem(`sort:${type}`); } catch { return null; } };
+const saveSort = (type, key) => { try { localStorage.setItem(`sort:${type}`, key); } catch { /* storage blocked: sort just won't be remembered */ } };
 async function viewLog(view, type) {
   const t = TYPES[type], v = state.vehicle.id;
   const [rows, att] = await Promise.all([db.list(type, v), db.attachmentMap(v, type)]);
+  const sort = t.sorts.find(x => x.key === loadSort(type)) ?? t.sorts[0];
+  const sorted = [...rows].sort(sort.cmp);
   const total = rows.reduce((a, r) => a + Number(t.cost(r) || 0), 0);
 
-  const groups = [];
-  rows.forEach(r => {
-    const key = String(r[t.dateField]).slice(0, 7);
-    let g = groups[groups.length - 1];
-    if (!g || g.key !== key) { g = { key, rows: [], sum: 0 }; groups.push(g); }
-    g.rows.push(r);
-    g.sum += Number(t.cost(r) || 0);
-  });
+  // Date sorts keep month headers; other sorts show one flat list.
+  let groups = [];
+  if (sort.group) {
+    sorted.forEach(r => {
+      const key = String(r[t.dateField]).slice(0, 7);
+      let g = groups[groups.length - 1];
+      if (!g || g.key !== key) { g = { key, title: monthLong(key), rows: [], sum: 0 }; groups.push(g); }
+      g.rows.push(r);
+      g.sum += Number(t.cost(r) || 0);
+    });
+  } else if (sorted.length) groups = [{ title: sort.label, rows: sorted, sum: total }];
 
   const card = r => {
     const c = t.card(r), p = dateParts(r[t.dateField]), n = att[r.id]?.length;
@@ -236,7 +244,7 @@ async function viewLog(view, type) {
       <article class="job">
         <div class="jdate">${t.dateLabel ? `<small>${t.dateLabel}</small>` : ''}<b>${p.d}</b><span>${p.m} ${p.y}</span></div>
         <div class="jbody">
-          <div class="jtop"><h3>${esc(c.title)}</h3>${c.amount != null && c.amount !== '' ? `<span class="amt">${bdt(c.amount)}</span>` : ''}</div>
+          <div class="jtop"><h3><button type="button" class="jopen" data-open="${r.id}">${esc(c.title)}</button></h3>${c.amount != null && c.amount !== '' ? `<span class="amt">${bdt(c.amount)}</span>` : ''}</div>
           ${c.facts?.length ? `<p class="facts">${c.facts.map(f => `<span>${esc(f)}</span>`).join('')}</p>` : ''}
           ${c.lines?.length ? `<ul class="lines">${c.lines.map(l => `<li><span>${esc(l.text)}</span><span>${bdt(l.amount)}</span></li>`).join('')}</ul>` : ''}
           <div class="jfoot">
@@ -253,15 +261,20 @@ async function viewLog(view, type) {
 
   view.innerHTML = `
     <div class="head">
-      <div><h1>${t.title}</h1><p class="sum">${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}, ${bdt(total)} in total</p></div>
-      <button type="button" class="ghost sm" id="csv">${icon('download', 18)}<span>CSV</span></button>
+      <div class="ttl"><h1>${t.title}</h1><p class="sum">${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}, ${bdt(total)} in total</p>
+        <button type="button" class="link csv" id="csv">${icon('download', 16)}<span>Download CSV</span></button></div>
+      <div class="tools">
+        <select class="sort" id="sort" aria-label="Sort entries">${t.sorts.map(x => `<option value="${x.key}" ${x.key === sort.key ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
+      </div>
     </div>
-    ${groups.map(g => `<section><h2 class="mh"><span>${monthLong(g.key)}</span><b>${g.sum ? bdt(g.sum) : ''}</b></h2>${g.rows.map(card).join('')}</section>`).join('')
+    ${groups.map(g => `<section><h2 class="mh"><span>${esc(g.title)}</span><b>${g.sum ? bdt(g.sum) : ''}</b></h2>${g.rows.map(card).join('')}</section>`).join('')
       || `<div class="empty"><p>Nothing here yet. Tap the + button to add your first ${t.noun}.</p></div>`}
     <button type="button" class="fab" id="add" aria-label="Add ${t.noun}">${icon('plus', 28)}</button>`;
 
+  $('#sort').onchange = e => { saveSort(type, e.target.value); route(); };
   $('#add').onclick = () => openForm(type);
-  $('#csv').onclick = () => exportCsv(type, rows);
+  $('#csv').onclick = () => exportCsv(type, sorted);
+  view.querySelectorAll('[data-open]').forEach(b => b.onclick = () => openDetail(type, rows.find(r => r.id === b.dataset.open), rows, att[b.dataset.open] ?? []));
   view.querySelectorAll('[data-att]').forEach(b => b.onclick = () => showFiles(att[b.dataset.att]));
   view.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openForm(type, rows.find(r => r.id === b.dataset.edit)));
   view.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
@@ -269,6 +282,21 @@ async function viewLog(view, type) {
     try { await db.remove(type, rows.find(r => r.id === b.dataset.del)); toast('Deleted'); }
     catch (e) { toast(e.message); }
   });
+}
+
+// Read-only detail sheet. Photos load after it opens (signed URLs need a round trip).
+async function openDetail(type, row, rows, paths) {
+  const dlg = openSheet(detailHtml(type, row, rows, paths.length));
+  $('#cancel').onclick = () => dlg.close();
+  if (!paths.length) return;
+  try {
+    const items = await db.signedUrls(paths);
+    const box = $('#photos');
+    if (box) box.innerHTML = `<div class="files">${filesHtml(items, paths, false)}</div>`;
+  } catch (e) {
+    const box = $('#photos');
+    if (box) box.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+  }
 }
 
 async function viewReminders(view) {
@@ -477,16 +505,18 @@ async function openForm(type, row = null, preset = {}) {
   };
 }
 
+const filesHtml = (items, paths, removable) => items.map((d, i) => {
+  const p = d.path ?? paths[i];
+  const shown = /\.pdf$/i.test(p)
+    ? `<a href="${esc(d.signedUrl)}" target="_blank" rel="noopener">Open PDF ${i + 1}</a>`
+    : `<a href="${esc(d.signedUrl)}" target="_blank" rel="noopener"><img src="${esc(d.signedUrl)}" alt="Invoice ${i + 1}" loading="lazy"></a>`;
+  return `<div>${shown}${removable ? `<button type="button" class="link danger" data-rmf="${esc(p)}">Remove file</button>` : ''}</div>`;
+}).join('');
+
 async function showFiles(paths) {
   try {
     const items = await db.signedUrls(paths);
-    const dlg = openSheet(`<div class="files">${items.map((d, i) => {
-      const p = d.path ?? paths[i];
-      const shown = /\.pdf$/i.test(p)
-        ? `<a href="${esc(d.signedUrl)}" target="_blank" rel="noopener">Open PDF ${i + 1}</a>`
-        : `<a href="${esc(d.signedUrl)}" target="_blank" rel="noopener"><img src="${esc(d.signedUrl)}" alt="Invoice ${i + 1}"></a>`;
-      return `<div>${shown}<button type="button" class="link danger" data-rmf="${esc(p)}">Remove file</button></div>`;
-    }).join('')}</div><div class="row"><button type="button" class="ghost" id="cancel">Close</button></div>`);
+    const dlg = openSheet(`<div class="files">${filesHtml(items, paths, true)}</div><div class="row"><button type="button" class="ghost" id="cancel">Close</button></div>`);
     $('#cancel').onclick = () => dlg.close();
     dlg.querySelectorAll('[data-rmf]').forEach(b => b.onclick = async () => {
       if (!confirm('Remove this file?')) return;
