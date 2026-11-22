@@ -160,7 +160,9 @@ button.fab {
 .spark-area { fill: var(--teal); opacity: .13; }
 .spark-dot { fill: var(--needle); stroke: var(--edgec); stroke-width: 1.5; }
 
-.head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 4px 10px; }
+.head h1 { font-size: clamp(30px, 8.6vw, 36px); }
+.tools { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 h2.mh { justify-content: space-between; align-items: baseline; margin: 22px 0 8px; font-size: 21px; }
 h2.mh b { font: 600 15px var(--body); color: var(--ink2); }
 .job { display: grid; grid-template-columns: 66px 1fr; margin: 0 0 12px; background: var(--card); border: var(--edge); border-radius: 8px; box-shadow: var(--shadow); overflow: hidden; }
@@ -284,3 +286,63 @@ button.chip .ic { color: var(--teal); }
 /* long model output must wrap, never widen the page */
 .tk > div { min-width: 0; }
 .tk b, .tk span, .advice-sum { overflow-wrap: anywhere; }
+
+/* sort dropdown beside the page title */
+select.sort {
+  width: auto; max-width: 138px; min-height: 42px; margin: 0; padding: 0 32px 0 12px; font: 600 15px var(--body); color: var(--ink);
+  appearance: none; -webkit-appearance: none; cursor: pointer; text-overflow: ellipsis;
+  background: var(--card) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'><path d='M1 1l6 6 6-6' fill='none' stroke='%2325201a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>") no-repeat right 11px center;
+  border: var(--edge); border-radius: 8px; box-shadow: 2px 2px 0 var(--edgec);
+}
+@media (prefers-color-scheme: dark) {
+  select.sort { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'><path d='M1 1l6 6 6-6' fill='none' stroke='%23ecdfc3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>"); }
+}
+button.sm#csv { min-width: 44px; padding: 0 10px; }
+
+/* the whole card opens the detail sheet; the title is the one focusable control (stretched-link pattern) */
+.job { position: relative; }
+button.jopen {
+  min-height: 0; padding: 0; display: inline; font: inherit; text-align: left; color: inherit; background: none; border: 0; box-shadow: none; border-radius: 0; cursor: pointer;
+}
+button.jopen::after { content: ""; position: absolute; inset: 0; }
+button.jopen:active::after { background: rgba(0, 0, 0, .06); }
+button.jopen:focus-visible { outline: none; }
+button.jopen:focus-visible::after { outline: 3px solid var(--teal); outline-offset: -3px; border-radius: 8px; }
+.jact { position: relative; z-index: 1; }
+
+/* detail sheet */
+.dhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin: 2px 0 10px; }
+.dtitle { margin: 0; font: 800 28px/1.05 var(--display); overflow-wrap: anywhere; }
+h2.dtitle::after { display: none; }
+.dsub { margin: 4px 0 8px; color: var(--ink2); }
+.dl { margin: 6px 0 0; }
+.dl > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-bottom: 1px dashed var(--rule); }
+.dl dt { color: var(--ink2); }
+.dl dd { margin: 0; font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.lines.big { margin-top: 6px; padding-top: 0; border-top: 0; font-size: 16px; }
+.lines.big li { padding: 8px 0; border-bottom: 1px dashed var(--rule); align-items: flex-start; }
+.lines.big small { display: block; color: var(--ink2); font-size: 14px; }
+.photos .files img { width: 100%; }
+.detail h4 { margin: 14px 0 2px; font: 700 18px var(--display); }
+.hnote { margin: 6px 0; color: var(--ink2); }
+.hist { list-style: none; margin: 4px 0 0; padding: 0; }
+.hist li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 8px 0; border-bottom: 1px dashed var(--rule); }
+.hist b { display: block; font-weight: 600; }
+.hist span { color: var(--ink2); font-size: 15px; }
+.hist .hamt { font: 700 18px var(--display); color: var(--ink); white-space: nowrap; }
+.trend { margin: 6px 0 2px; padding: 8px 12px 0; background: var(--manila); border: 2px dashed var(--rule); border-radius: 8px; }
+.trend .mut { margin: 0 0 8px; font-size: 14px; }
+.fbar.one { grid-template-columns: 1fr; }
+
+/* keep the sort dropdown on the title's row: the title block takes what is left, the tools keep their size */
+.head { flex-wrap: nowrap; align-items: flex-start; }
+.head .ttl { flex: 1 1 0; min-width: 0; }
+.head .tools { flex: none; margin-top: 6px; }
+.head .sum { overflow-wrap: anywhere; }
+select.sort { max-width: 124px; }
+button.sm#csv { min-width: 42px; padding: 0 9px; }
+
+/* CSV lives under the title so the dropdown has room to show its full label */
+select.sort { max-width: 158px; }
+.head .tools { margin-top: 8px; }
+button.csv { min-height: 34px; padding: 0; gap: 6px; font-size: 15px; }
