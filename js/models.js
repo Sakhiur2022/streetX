@@ -127,6 +127,34 @@ export const TYPES = {
   },
 };
 
+// ---------- sorting: first option is the default; `group` = keep month headers ----------
+const num = v => Number(v ?? 0);
+const cmpDate = (f, dir) => (a, b) => dir * (
+  String(a[f]).localeCompare(String(b[f])) || num(a.odometer_km) - num(b.odometer_km)
+  || String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')));
+
+function mkSorts(t, { newest = 'Newest first', oldest = 'Oldest first', extra = [] } = {}) {
+  return [
+    { key: 'newest', label: newest, group: true, cmp: cmpDate(t.dateField, -1) },
+    { key: 'oldest', label: oldest, group: true, cmp: cmpDate(t.dateField, 1) },
+    { key: 'cost_hi', label: 'Highest cost', cmp: (a, b) => num(t.cost(b)) - num(t.cost(a)) },
+    { key: 'cost_lo', label: 'Lowest cost', cmp: (a, b) => num(t.cost(a)) - num(t.cost(b)) },
+    ...extra,
+  ];
+}
+TYPES.fuel.sorts = mkSorts(TYPES.fuel, { extra: [
+  { key: 'liters', label: 'Most liters', cmp: (a, b) => num(b.liters) - num(a.liters) },
+  { key: 'ppl', label: 'Cheapest first', cmp: (a, b) => num(a.price_per_liter) - num(b.price_per_liter) },
+] });
+TYPES.maintenance.sorts = mkSorts(TYPES.maintenance, { extra: [
+  { key: 'shop', label: 'Shop A to Z', cmp: (a, b) => (!a.vendor) - (!b.vendor) || String(a.vendor ?? '').localeCompare(String(b.vendor ?? '')) }, // visits with no shop go last
+] });
+TYPES.expense.sorts = mkSorts(TYPES.expense, { extra: [
+  { key: 'category', label: 'By category', cmp: (a, b) => label(EXP, a.category).localeCompare(label(EXP, b.category)) },
+] });
+TYPES.incident.sorts = mkSorts(TYPES.incident);
+TYPES.document.sorts = mkSorts(TYPES.document, { newest: 'Latest expiry', oldest: 'Soonest expiry' });
+
 // Form data -> DB row. New rows omit empty values so DB defaults apply;
 // edits send null for cleared fields so they really get cleared.
 export function buildPayload(type, fd, vehicleId, edit = false) {
