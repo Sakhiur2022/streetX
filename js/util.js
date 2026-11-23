@@ -12,3 +12,5 @@ export const dateParts = iso => {
 };
 export const monthShort = ym => { const [y, m] = String(ym).split('-'); return `${SHORT[Number(m) - 1] ?? ''} ${String(y).slice(2)}`; };
 export const monthLong = ym => { const [y, m] = String(ym).split('-'); return `${LONG[Number(m) - 1] ?? ''} ${y}`; };
+
+export const niceDate = iso => { const p = dateParts(iso); return `${p.d} ${p.m} ${p.y}`; };
