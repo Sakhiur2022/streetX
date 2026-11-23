@@ -4,10 +4,11 @@ import { bus } from './events.js';
 import { TYPES, OPTS, label, today, buildPayload, itemsOf } from './models.js';
 import { ruleStatus, docStatus } from './strategies.js';
 import { applyScan, itemHtml } from './scan.js';
-import { esc, bdt, dateParts, monthLong } from './util.js';
+import { esc, bdt, dateParts, monthLong, niceDate } from './util.js';
 import { icon } from './icons.js';
 import { gauge, odometer, sparkline, spendBars } from './viz.js';
 import { detailHtml } from './detail.js';
+import { computeFacts, outcomeFacts, applyFeedback, staleFeedbackKeys, countBySeverity, signature, severityRank, SEVERITY_LABEL } from './facts.js';
 
 const $ = s => document.querySelector(s);
 const state = { vehicle: null, advice: null };
@@ -19,7 +20,6 @@ const PAGES = [
   ['reminders', 'Service intervals', 'clock', true], ['advice', 'Advice', 'spark', true],
 ];
 const STAMP = { overdue: 'Overdue', soon: 'Due soon', ok: 'OK', never: 'Not logged' };
-const LEVEL = { high: 'overdue', medium: 'soon', low: 'ok' };
 
 function toast(msg) {
   const t = $('#toast');
@@ -327,65 +327,139 @@ async function viewReminders(view) {
   });
 }
 
-// ---------- advice (Gemini) ----------
-// Only totals and history go to Gemini: no plate, email, photos or notes.
-async function buildAdviceInput() {
+// ---------- advice: facts worked out from your records, optional AI comments on top ----------
+const SEV_STAMP = { high: 'overdue', medium: 'soon', low: 'never', info: 'ok' };
+
+async function loadAdviceData() {
   const v = state.vehicle.id;
-  const [odo, eco, rem, monthly, docs, fuel, incidents] = await Promise.all([
-    db.odometer(v), db.fuelEconomy(v), db.reminders(v), db.monthly(v),
-    db.list('document', v, 50), db.list('fuel', v, 40), db.list('incident', v, 30),
+  const [odo, eco, rem, monthly, docs, fuel, maintenance, expenses, incidents, feedback] = await Promise.all([
+    db.odometer(v), db.fuelEconomy(v), db.reminders(v), db.monthly(v), db.list('document', v, 500), db.list('fuel', v, 500),
+    db.list('maintenance', v, 500), db.list('expense', v, 500), db.list('incident', v, 500), db.feedback(v),
   ]);
-  const months = [...new Set(monthly.map(m => m.month))].slice(0, 6);
-  const spend = months.map(m => ({
-    month: m.slice(0, 7),
-    ...Object.fromEntries(monthly.filter(x => x.month === m).map(x => [x.category, Math.round(Number(x.total_bdt))])),
-  }));
-  const asc = [...fuel].reverse();
-  const first = asc[0], last = asc[asc.length - 1];
-  const span = first && last ? (new Date(last.logged_on) - new Date(first.logged_on)) / 864e5 : 0;
-  return {
-    today: today(),
-    car: { make: state.vehicle.make, model: state.vehicle.model, year: state.vehicle.year },
-    odometer_km: odo,
-    avg_km_per_month: span >= 30 ? Math.round((last.odometer_km - first.odometer_km) / span * 30) : null,
-    km_per_l_recent: eco.slice(0, 12).map(r => ({ date: r.end_date, km_per_l: Number(r.km_per_l), km: r.km })),
-    fuel_price_per_l_recent: fuel.slice(0, 12).map(r => ({ date: r.logged_on, bdt: Number(r.price_per_liter), type: r.fuel_type })),
-    monthly_spend_bdt: spend,
-    service_status: rem.map(r => ({ item: r.title, last_done_km: r.last_odometer_km, last_done_on: r.last_done_on, status: ruleStatus(r).text })),
-    documents: docs.slice(0, 10).map(d => ({ type: d.doc_type, expires_on: d.expires_on, status: docStatus(d).when })),
-    incidents_recent: incidents.slice(0, 10).map(i => ({ date: i.occurred_on, what: String(i.description).slice(0, 120), repair_bdt: Number(i.repair_cost_bdt) })),
-  };
+  return { odo, eco, rem, monthly, docs, fuel, maintenance, expenses, incidents, feedback };
 }
 
-function renderAdvice(r) {
-  const list = arr => `<ul class="tickets">${arr.map(a =>
-    `<li class="tk ${LEVEL[a.level] ?? 'never'}"><div><b>${esc(a.title)}</b><span>${esc(a.detail)}</span></div></li>`).join('')}</ul>`;
-  return `<p class="advice-sum">${esc(r.summary)}</p>
-    ${r.alerts.length ? `<h2>Needs attention</h2>${list(r.alerts)}` : ''}
-    ${r.savings.length ? `<h2>Ways to spend less</h2>${list(r.savings.map(s => ({ ...s, level: 'low' })))}` : ''}
-    ${r.anomalies.length ? `<h2>Odd things in your data</h2>${list(r.anomalies.map(s => ({ ...s, level: 'medium' })))}` : ''}
-    <p class="mut">Generated ${esc(r.at)}</p>`;
+function adviceModel() {
+  const d = state.advData, t = today();
+  const base = computeFacts({ today: t, odometer: d.odo, eco: d.eco, rem: d.rem, docs: d.docs, fuel: d.fuel,
+    maintenance: d.maintenance, expenses: d.expenses, incidents: d.incidents, monthly: d.monthly });
+  const all = [...base, ...outcomeFacts({ eco: d.eco, feedback: d.feedback, today: t })];
+  return { all, ...applyFeedback(all, d.feedback, t) };
 }
 
-async function viewAdvice(view) {
+const evChips = ev => (ev ?? []).map(e => `<button type="button" class="chip ev" data-ev="${esc(e.type)}:${esc(e.id)}">${esc(e.label)}</button>`).join('');
+
+function factHtml(f, ai) {
+  const note = ai?.byId?.[f.key];
+  return `
+    <li class="fact ${f.severity}">
+      <div class="fhead"><h3>${esc(f.title)}</h3><span class="stamp ${SEV_STAMP[f.severity]}">${SEVERITY_LABEL[f.severity]}</span></div>
+      <p>${esc(f.detail)}</p>
+      ${f.reopened ? '<p class="fnote">Changed since you hid it.</p>' : ''}
+      ${note && (note.why || note.action) ? `<div class="ai"><span class="aitag">AI</span>${note.why ? `<p>${esc(note.why)}</p>` : ''}${note.action ? `<p><b>Next:</b> ${esc(note.action)}</p>` : ''}</div>` : ''}
+      ${f.checks?.length ? `<h4>Worth checking (possible causes, not proven)</h4><ul class="checks">${f.checks.map(c => `<li><span>${esc(c.text)}</span>${c.evidence?.length ? `<div class="evid">${evChips(c.evidence)}</div>` : ''}</li>`).join('')}</ul>` : ''}
+      ${f.evidence?.length ? `<div class="evid"><span>Evidence</span>${evChips(f.evidence)}</div>` : ''}
+      <div class="factbar">
+        <button type="button" class="ghost sm" data-fb="done" data-key="${esc(f.key)}">Done</button>
+        <button type="button" class="ghost sm" data-fb="dismissed" data-key="${esc(f.key)}">Not relevant</button>
+      </div>
+    </li>`;
+}
+
+// An evidence chip opens the same read-only detail sheet as tapping the card in its list.
+async function openEvidence(type, id) {
+  const d = state.advData;
+  const rows = { fuel: d.fuel, maintenance: d.maintenance, expense: d.expenses, incident: d.incidents, document: d.docs }[type];
+  const row = rows?.find(r => r.id === id);
+  if (!row) return toast('That entry no longer exists');
+  try {
+    const att = await db.attachmentMap(state.vehicle.id, type);
+    openDetail(type, row, rows, att[id] ?? []);
+  } catch (e) { toast(e.message); }
+}
+
+function paintAdvice(view) {
+  const v = state.vehicle.id;
+  const { visible, hidden } = adviceModel();
+  const ai = state.ai && state.ai.sig === signature(visible) ? state.ai : null; // AI text is only shown while it still matches the facts
+  const idx = f => { const i = ai?.order?.indexOf(f.key) ?? -1; return i < 0 ? 999 : i; };
+  const sorted = [...visible].sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || idx(a) - idx(b));
+  const counts = countBySeverity(visible);
+
   view.innerHTML = `
     <h1>Advice</h1>
-    <p class="sum">Sends only totals and service history to Gemini. It is not a mechanic: confirm brake, hybrid and safety work with your workshop.</p>
-    <button type="button" id="run">Analyse my car</button>
-    <div id="advice-out"></div>`;
-  const out = $('#advice-out');
-  if (state.advice) out.innerHTML = renderAdvice(state.advice); // kept in memory so tab switches don't spend quota
-  $('#run').onclick = async () => {
-    const btn = $('#run');
-    btn.disabled = true;
-    btn.textContent = 'Analysing…';
+    <p class="sum">Everything below is worked out from your own records. AI comments are optional and always labelled.</p>
+    ${sorted.length
+      ? `<div class="statusrow">${['high', 'medium', 'low', 'info'].filter(k => counts[k]).map(k => `<span class="stamp ${SEV_STAMP[k]}">${counts[k]} ${SEVERITY_LABEL[k].toLowerCase()}</span>`).join('')}</div>`
+      : '<p class="calm">Nothing needs attention right now.</p>'}
+    ${ai && (ai.summary || ai.dropped) ? `<div class="ai ai-sum"><span class="aitag">AI</span>${ai.summary ? `<p>${esc(ai.summary)}</p>` : ''}${ai.dropped ? `<p class="fnote">${ai.dropped === 1 ? '1 AI note was left out because it quoted a number that is not in your records.' : `${ai.dropped} AI notes were left out because they quoted numbers that are not in your records.`}</p>` : ''}</div>` : ''}
+    <div class="row"><button type="button" id="explain" ${sorted.length ? '' : 'disabled'}>${ai ? 'Refresh AI comments' : 'Add AI comments'}</button></div>
+    <p class="mut small">This sends only the titles and details shown below to Gemini. It is not a mechanic: confirm brake, hybrid and safety work with your workshop.</p>
+    <p class="err" id="ai-msg"></p>
+    <ul class="facts-list">${sorted.map(f => factHtml(f, ai)).join('')}</ul>
+    ${hidden.length ? `
+      <details class="hidden-facts" id="hidden-facts" ${state.hiddenOpen ? 'open' : ''}>
+        <summary>Hidden (${hidden.length})</summary>
+        <ul class="hidden-list">${hidden.map(h => `
+          <li><div><b>${esc(h.title)}</b><span>${h.status === 'done' ? `Marked done on ${niceDate(h.since)}` : 'Marked not relevant'}</span></div>
+          <button type="button" class="ghost sm" data-restore="${esc(h.key)}">Restore</button></li>`).join('')}</ul>
+        <p class="mut small">Not relevant stays hidden until the situation changes. Done hides an item for 30 days, or until it changes.</p>
+      </details>` : ''}`;
+
+  $('#hidden-facts')?.addEventListener('toggle', e => { state.hiddenOpen = e.target.open; });
+  view.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => { const [type, ...rest] = b.dataset.ev.split(':'); openEvidence(type, rest.join(':')); });
+
+  view.querySelectorAll('[data-fb]').forEach(b => b.onclick = async () => {
+    const f = visible.find(x => x.key === b.dataset.key);
+    if (!f) return;
     try {
-      const r = await ai.advice(await buildAdviceInput());
-      state.advice = { ...r, at: new Date().toLocaleString() };
-      out.innerHTML = renderAdvice(state.advice);
-    } catch (e) { out.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
-    finally { btn.disabled = false; btn.textContent = 'Analyse my car'; }
+      await db.setFeedback(v, f.key, f.fp, b.dataset.fb, f.snapshot ?? {});
+      state.advData.feedback = await db.feedback(v);
+      toast(b.dataset.fb === 'done' ? 'Marked done. Hidden for 30 days, or until it changes.' : 'Hidden. It returns only if the situation changes.');
+      paintAdvice(view);
+    } catch (e) { toast(e.message); }
+  });
+  view.querySelectorAll('[data-restore]').forEach(b => b.onclick = async () => {
+    try {
+      await db.clearFeedback(v, b.dataset.restore);
+      state.advData.feedback = await db.feedback(v);
+      paintAdvice(view);
+    } catch (e) { toast(e.message); }
+  });
+
+  $('#explain').onclick = async () => {
+    const btn = $('#explain');
+    btn.disabled = true;
+    btn.textContent = 'Asking Gemini…';
+    $('#ai-msg').textContent = '';
+    try {
+      const facts = sorted.slice(0, 20).map(f => ({
+        id: f.key, kind: f.kind, severity: f.severity, title: f.title,
+        detail: f.detail + (f.checks?.length ? ` Things to check: ${f.checks.map(c => c.text).join(' ')}` : ''),
+      }));
+      const r = await ai_explain(facts);
+      state.ai = { sig: signature(visible), summary: r.summary, order: r.order, byId: Object.fromEntries(r.items.map(i => [i.fact_id, i])), dropped: r.dropped };
+      paintAdvice(view);
+    } catch (e) {
+      $('#ai-msg').textContent = e.message === 'Unknown mode'
+        ? 'Redeploy the gemini function to get AI comments. Your facts above do not need it.' : e.message;
+      btn.disabled = false;
+      btn.textContent = ai ? 'Refresh AI comments' : 'Add AI comments';
+    }
   };
+}
+const ai_explain = facts => ai.explain(facts, { make: state.vehicle.make, model: state.vehicle.model, year: state.vehicle.year });
+
+async function viewAdvice(view) {
+  view.innerHTML = '<h1>Advice</h1><p class="sum">Checking your records…</p>';
+  state.advData = await loadAdviceData();
+  // Feedback for situations that no longer exist is dropped, so a problem that returns next year is not pre-dismissed.
+  const stale = staleFeedbackKeys(adviceModel().all, state.advData.feedback);
+  if (stale.length) {
+    try { await Promise.all(stale.map(k => db.clearFeedback(state.vehicle.id, k))); } catch { /* harmless: retried next visit */ }
+    state.advData.feedback = state.advData.feedback.filter(f => !stale.includes(f.fact_key));
+  }
+  paintAdvice(view);
 }
 
 // ---------- shared form flow: render -> validate -> save -> upload -> notify ----------
