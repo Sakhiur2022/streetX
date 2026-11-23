@@ -1,7 +1,7 @@
 // Supabase Edge Function: gemini
 // Keeps the Gemini API key on the server. Two modes:
 //   extract : invoice / paperwork photo  -> structured fields for the forms
-//   advice  : aggregated car stats       -> alerts, savings tips, odd data points
+//   explain : facts the app computed     -> optional summary, order, why / next step (numbers checked)
 //
 // Deploy (run from the car-tracker folder, needs the Supabase CLI):
 //   supabase login
@@ -125,37 +125,61 @@ async function extract(b: any) {
   return k.clean(raw ?? {});
 }
 
-// ---------- advice ----------
-const ITEM = obj({ title: { type: 'string' }, detail: { type: 'string' } });
-const ADVICE_SCHEMA = obj({
+// ---------- explain: Gemini comments on facts the app already verified ----------
+// The app computes every fact from the owner's records. Gemini may only add "why" / "next step" text and an order,
+// and any text that quotes a number which is not in the facts is thrown away before it reaches the owner.
+const EXPLAIN_SCHEMA = obj({
   summary: { type: 'string' },
-  alerts: { type: 'array', maxItems: 5, items: obj({ level: { type: 'string', enum: ['high', 'medium', 'low'] }, title: { type: 'string' }, detail: { type: 'string' } }) },
-  savings: { type: 'array', maxItems: 4, items: ITEM },
-  anomalies: { type: 'array', maxItems: 3, items: ITEM },
+  order: { type: 'array', items: { type: 'string' } },
+  items: { type: 'array', items: obj({ fact_id: { type: 'string' }, why: { type: 'string' }, action: { type: 'string' } }) },
 });
 
-const ADVICE_PROMPT =
-  'You are a careful car-cost analyst for one owner of a Toyota Corolla Fielder Hybrid driven mainly in Dhaka: ' +
-  'heavy stop-and-go traffic, dust, heat and monsoon waterlogging. You receive a JSON summary of their own records ' +
-  '(money in BDT, distance in km, fuel economy in km/L). Rules: use only facts present in the JSON; never invent ' +
-  'numbers, prices or dates. If data is too thin for a point, say what to log next instead. Look for: overdue or ' +
-  'soon-due services, expiring documents (tax token, fitness certificate, insurance), falling km/L and likely causes ' +
-  'to check (tyre pressure, dirty air filter, AC use, traffic), unusual spending spikes, fuel price changes. Savings ' +
-  'tips must be practical and tied to the data. You are not a mechanic: for brakes, hybrid battery or anything ' +
-  'safety-related, tell the owner to confirm with a workshop. Be concise: summary 2-3 sentences; each detail 1-2 sentences. ' +
-  'Plain English.';
+const EXPLAIN_PROMPT =
+  'You comment on verified facts about one owner\'s Toyota Corolla Fielder Hybrid, driven mainly in Dhaka: heavy stop-and-go ' +
+  'traffic, dust, heat and monsoon waterlogging. The app computed every fact from the owner\'s own records. Rules: ' +
+  '(1) Never state a number, date, price or percentage that is not written in a fact; copy numbers exactly as written, ' +
+  'and never calculate new ones. (2) Never invent causes. Where a fact lists things to check, say "could be", not "is". ' +
+  '(3) For brakes, hybrid battery, 12V battery, cooling or anything safety-related, tell the owner to confirm with a workshop. ' +
+  '(4) summary: at most 2 sentences on what matters most. (5) items: for facts worth commenting on, give why (one sentence ' +
+  'on why it matters for this car and these roads) and action (one concrete next step). Skip facts that need no comment. ' +
+  '(6) order: fact ids, most urgent first. Use fact ids exactly as given. Plain English.';
 
-async function advice(b: any) {
-  const text = JSON.stringify(b.summary ?? {});
-  if (text.length > 30_000) throw new HttpError(400, 'Summary too large');
-  const r = await callGemini([{ text: 'Vehicle data (JSON):\n' + text }], ADVICE_SCHEMA, ADVICE_PROMPT) ?? {};
-  const items = (a: unknown, max: number) => (Array.isArray(a) ? a : []).slice(0, max)
-    .map((x: any) => ({ title: str(x?.title, 120) ?? '', detail: str(x?.detail, 400) ?? '', level: pick(x?.level, ['high', 'medium', 'low']) ?? 'low' }))
-    .filter(x => x.title || x.detail);
-  return {
-    summary: str(r.summary, 800) ?? 'No summary returned.',
-    alerts: items(r.alerts, 5), savings: items(r.savings, 4), anomalies: items(r.anomalies, 3),
+// Every number in a string, normalised ("1,230" -> "1230", "13.0" -> "13").
+const numbersIn = (t: string) => new Set((t.match(/\d[\d,]*(?:\.\d+)?/g) ?? [])
+  .map(n => n.replace(/,/g, '')).map(n => (n.includes('.') ? n.replace(/0+$/, '').replace(/\.$/, '') : n)));
+const SMALL = /^(?:\d|1[0-2])$/; // counts like "2 items" are fine
+
+async function explain(b: any) {
+  const facts = (Array.isArray(b.facts) ? b.facts : []).slice(0, 25)
+    .map((f: any) => ({ id: str(f?.id, 80), kind: str(f?.kind, 30), severity: pick(f?.severity, ['high', 'medium', 'low', 'info']),
+      title: str(f?.title, 160), detail: str(f?.detail, 500) }))
+    .filter((f: any) => f.id && f.title);
+  if (!facts.length) throw new HttpError(400, 'No facts to explain');
+  const car = { make: str(b.car?.make, 40), model: str(b.car?.model, 60), year: typeof b.car?.year === 'number' ? b.car.year : null };
+  const input = JSON.stringify({ car, facts });
+  if (input.length > 20_000) throw new HttpError(400, 'Too many facts');
+
+  const raw = await callGemini([{ text: 'Verified facts (JSON):\n' + input }], EXPLAIN_SCHEMA, EXPLAIN_PROMPT) ?? {};
+
+  const allowed = numbersIn(input);
+  const clean = (t: unknown) => {
+    const text = str(t, 500);
+    return text && [...numbersIn(text)].every(n => allowed.has(n) || SMALL.test(n)) ? text : null;
   };
+  const ids = new Set(facts.map((f: any) => f.id));
+  const seen = new Set<string>(), items: { fact_id: string; why: string | null; action: string | null }[] = [];
+  let dropped = 0;
+  for (const it of Array.isArray(raw.items) ? raw.items : []) {
+    if (!ids.has(it?.fact_id) || seen.has(it.fact_id)) { dropped++; continue; }
+    seen.add(it.fact_id);
+    const why = clean(it.why), action = clean(it.action);
+    if ((str(it.why) && !why) || (str(it.action) && !action)) dropped++;
+    if (why || action) items.push({ fact_id: it.fact_id, why, action });
+  }
+  const summary = clean(raw.summary);
+  if (str(raw.summary) && !summary) dropped++;
+  const order = [...new Set((Array.isArray(raw.order) ? raw.order : []).filter((x: unknown) => typeof x === 'string' && ids.has(x)))];
+  return { summary, order, items, dropped };
 }
 
 // ---------- Gemini call ----------
@@ -198,7 +222,7 @@ Deno.serve(async req => {
     await requireUser(req);
     const body = await req.json();
     if (body.mode === 'extract') return json({ result: await extract(body) });
-    if (body.mode === 'advice') return json({ result: await advice(body) });
+    if (body.mode === 'explain') return json({ result: await explain(body) });
     return json({ error: 'Unknown mode' }, 400);
   } catch (e) {
     if (e instanceof HttpError) return json({ error: e.message }, e.status);
