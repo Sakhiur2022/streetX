@@ -50,7 +50,7 @@ export const ai = {
     if (data.length > 7_000_000) throw new Error('File too large (keep it under about 5 MB)');
     return callGemini({ mode: 'extract', kind, mime_type: blob.type || file.type, image_base64: data });
   },
-  advice: summary => callGemini({ mode: 'advice', summary }),
+  explain: (facts, car) => callGemini({ mode: 'explain', facts, car }),
 };
 
 export const db = {
@@ -153,6 +153,13 @@ export const db = {
   fuelEconomy: vid => ok(sb.from('fuel_economy').select('*').eq('vehicle_id', vid).order('end_date', { ascending: false })),
   reminders: vid => ok(sb.from('reminder_status').select('*').eq('vehicle_id', vid)),
   monthly: vid => ok(sb.from('monthly_costs').select('*').eq('vehicle_id', vid).order('month', { ascending: false }).limit(1000)),
+
+  // ---- advice feedback ("Done" / "Not relevant") ----
+  feedback: vid => ok(sb.from('advice_feedback').select('*').eq('vehicle_id', vid)),
+  setFeedback: (vid, key, fp, status, snapshot = {}) => ok(sb.from('advice_feedback').upsert(
+    { vehicle_id: vid, fact_key: key, fingerprint: fp, status, snapshot, created_at: new Date().toISOString() },
+    { onConflict: 'vehicle_id,fact_key' })),
+  clearFeedback: (vid, key) => ok(sb.from('advice_feedback').delete().eq('vehicle_id', vid).eq('fact_key', key)),
 
   // ---- reminder rules ----
   rules: vid => ok(sb.from('reminder_rules').select('*').eq('vehicle_id', vid).order('title')),
