@@ -140,7 +140,7 @@ const EXPLAIN_PROMPT =
   '(1) Never state a number, date, price or percentage that is not written in a fact; copy numbers exactly as written, ' +
   'and never calculate new ones. (2) Never invent causes. Where a fact lists things to check, say "could be", not "is". ' +
   '(3) For brakes, hybrid battery, 12V battery, cooling or anything safety-related, tell the owner to confirm with a workshop. ' +
-  '(4) summary: at most 2 sentences on what matters most. (5) items: for facts worth commenting on, give why (one sentence ' +
+  '(4) summary: at most 2 short sentences telling the owner what to do first and why, as direct instructions. (5) items: for facts worth commenting on, give why (one sentence ' +
   'on why it matters for this car and these roads) and action (one concrete next step). Skip facts that need no comment. ' +
   '(6) order: fact ids, most urgent first. Use fact ids exactly as given. Plain English.';
 
