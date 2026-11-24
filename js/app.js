@@ -2,7 +2,8 @@
 import { db, ai } from './db.js';
 import { bus } from './events.js';
 import { TYPES, OPTS, label, today, buildPayload, itemsOf } from './models.js';
-import { ruleStatus, docStatus } from './strategies.js';
+import { docStatus } from './strategies.js';
+import { estimateUsage, ruleOutlook, niceShort } from './usage.js';
 import { applyScan, itemHtml } from './scan.js';
 import { esc, bdt, dateParts, monthLong, niceDate } from './util.js';
 import { icon } from './icons.js';
@@ -118,9 +119,10 @@ function openMore() {
 // ---------- Home ----------
 async function viewHome(view) {
   const v = state.vehicle.id;
-  const [odo, eco, rem, monthly, docs, first] = await Promise.all([
-    db.odometer(v), db.fuelEconomy(v), db.reminders(v), db.monthly(v), db.list('document', v, 200), db.firstOdometer(v),
+  const [odo, eco, rem, monthly, docs, first, readings] = await Promise.all([
+    db.odometer(v), db.fuelEconomy(v), db.reminders(v), db.monthly(v), db.list('document', v, 200), db.firstOdometer(v), db.odometerReadings(v),
   ]);
+  const octx = { usage: estimateUsage(readings, today()), today: today() }; // km per day -> due dates
 
   const kmTotal = eco.reduce((a, r) => a + Number(r.km), 0);
   const liters = eco.reduce((a, r) => a + Number(r.liters), 0);
@@ -135,7 +137,9 @@ async function viewHome(view) {
   const oil = rem.find(r => r.category === 'oil_change');
   const oilOk = oil && oil.last_done_on != null && oil.km_remaining != null && oil.every_km;
   const oilLeft = oilOk ? Number(oil.km_remaining) : null;
-  const oilNote = oilLeft == null ? 'No oil change logged yet' : oilLeft < 0 ? 'Overdue' : 'km left';
+  const oilOut = oil ? ruleOutlook(oil, octx) : null;
+  const oilNote = oilLeft == null ? 'No oil change logged yet' : oilLeft < 0 ? 'Overdue'
+    : oilOut?.by === 'km' && oilOut.dueOn ? `km left, due around ${niceShort(oilOut.dueOn, today())}` : 'km left';
 
   // Due and expiring: documents plus any service that is not comfortably ok.
   const latest = {};
@@ -146,8 +150,8 @@ async function viewHome(view) {
     if (d) { const s = docStatus(d); items.push({ title: label(OPTS.DOCS, k), text: s.text, level: s.level, rank: s.rank, log: s.level === 'ok' ? null : k }); }
     else if (k === 'tax_token' || k === 'fitness') items.push({ title: label(OPTS.DOCS, k), text: 'Not logged yet', level: 'never', rank: 2, log: k });
   });
-  rem.forEach(r => { const s = ruleStatus(r); if (s.level !== 'ok') items.push({ title: r.title, text: s.text, level: s.level, rank: s.rank, svc: r.category }); });
-  items.sort((a, b) => a.rank - b.rank);
+  rem.forEach(r => { const s = ruleOutlook(r, octx); if (s.level !== 'ok') items.push({ title: r.title, text: s.text, level: s.level, rank: s.rank, dueIn: s.dueIn, svc: r.category }); });
+  items.sort((a, b) => a.rank - b.rank || (a.dueIn ?? 1e6) - (b.dueIn ?? 1e6));
   const shown = items.slice(0, 8);
 
   const cats = [['fuel', 'Fuel'], ['maintenance', 'Service'], ['expense', 'Other'], ['incident', 'Incidents'], ['document', 'Documents']];
@@ -300,18 +304,26 @@ async function openDetail(type, row, rows, paths) {
 }
 
 async function viewReminders(view) {
-  const v = state.vehicle.id;
-  const [rules, status] = await Promise.all([db.rules(v), db.reminders(v)]);
-  const st = Object.fromEntries(status.map(s => [s.rule_id, ruleStatus(s)]));
+  const v = state.vehicle.id, t0 = today();
+  const [rules, status, readings] = await Promise.all([db.rules(v), db.reminders(v), db.odometerReadings(v)]);
+  const usage = estimateUsage(readings, t0), ctx = { usage, today: t0 };
+  const st = Object.fromEntries(status.map(s => [s.rule_id, ruleOutlook(s, ctx)]));
+  // Most urgent first: overdue, then by predicted date; never-logged and paused last.
+  const order = r => !r.active ? 4e6 : !st[r.id] ? 3e6 : st[r.id].level === 'never' ? 2e6 : st[r.id].level === 'overdue' ? -1e6 : (st[r.id].dueIn ?? 1e6);
+  const usageCard = usage.kmPerDay
+    ? `<div class="usage"><b>About ${Math.round(usage.kmPerDay)} km a day</b><span>${usage.low != null ? `Typical range ${Math.round(usage.low)} to ${Math.round(usage.high)}. ` : ''}Worked out from ${usage.n} odometer readings over ${usage.spanDays} days, and used for the due dates below.</span></div>`
+    : `<div class="usage"><b>No date predictions yet</b><span>Log refills with the odometer for about two weeks and due dates will appear here.</span></div>`;
   view.innerHTML = `
     <h1>Service intervals</h1>
-    <p class="sum">Counted from the last matching service entry. Change a number to change the rule.</p>
-    ${rules.map(r => {
+    ${usageCard}
+    ${[...rules].sort((a, b) => order(a) - order(b)).map(r => {
       const s = st[r.id], lvl = r.active ? (s?.level ?? 'never') : 'never';
+      const facts = [r.active ? (s?.text ?? 'Not logged') : 'Paused'];
+      if (r.active && s?.window) facts.push(`Likely between ${niceShort(s.window[0], t0)} and ${niceShort(s.window[1], t0)}`);
       return `
         <article class="rule${r.active ? '' : ' off'}">
           <div class="rtop"><h3>${esc(r.title)}</h3><span class="stamp ${lvl}">${r.active ? STAMP[lvl] : 'Paused'}</span></div>
-          <p class="facts"><span>${esc(r.active ? (s?.text ?? 'Not logged') : 'Paused')}</span></p>
+          <p class="facts">${facts.map(f => `<span>${esc(f)}</span>`).join('')}</p>
           <div class="rfields">
             <label class="f">Every (km)<input type="number" min="1" inputmode="numeric" data-r="${r.id}" data-f="every_km" value="${r.every_km ?? ''}"></label>
             <label class="f">Every (days)<input type="number" min="1" inputmode="numeric" data-r="${r.id}" data-f="every_days" value="${r.every_days ?? ''}"></label>
@@ -332,16 +344,16 @@ const SEV_STAMP = { high: 'overdue', medium: 'soon', low: 'never', info: 'ok' };
 
 async function loadAdviceData() {
   const v = state.vehicle.id;
-  const [odo, eco, rem, monthly, docs, fuel, maintenance, expenses, incidents, feedback] = await Promise.all([
+  const [odo, eco, rem, monthly, docs, fuel, maintenance, expenses, incidents, feedback, readings] = await Promise.all([
     db.odometer(v), db.fuelEconomy(v), db.reminders(v), db.monthly(v), db.list('document', v, 500), db.list('fuel', v, 500),
-    db.list('maintenance', v, 500), db.list('expense', v, 500), db.list('incident', v, 500), db.feedback(v),
+    db.list('maintenance', v, 500), db.list('expense', v, 500), db.list('incident', v, 500), db.feedback(v), db.odometerReadings(v),
   ]);
-  return { odo, eco, rem, monthly, docs, fuel, maintenance, expenses, incidents, feedback };
+  return { odo, eco, rem, monthly, docs, fuel, maintenance, expenses, incidents, feedback, readings };
 }
 
 function adviceModel() {
   const d = state.advData, t = today();
-  const base = computeFacts({ today: t, odometer: d.odo, eco: d.eco, rem: d.rem, docs: d.docs, fuel: d.fuel,
+  const base = computeFacts({ today: t, odometer: d.odo, usage: estimateUsage(d.readings, t), eco: d.eco, rem: d.rem, docs: d.docs, fuel: d.fuel,
     maintenance: d.maintenance, expenses: d.expenses, incidents: d.incidents, monthly: d.monthly });
   const all = [...base, ...outcomeFacts({ eco: d.eco, feedback: d.feedback, today: t })];
   return { all, ...applyFeedback(all, d.feedback, t) };
@@ -388,13 +400,11 @@ function paintAdvice(view) {
 
   view.innerHTML = `
     <h1>Advice</h1>
-    <p class="sum">Everything below is worked out from your own records. AI comments are optional and always labelled.</p>
     ${sorted.length
       ? `<div class="statusrow">${['high', 'medium', 'low', 'info'].filter(k => counts[k]).map(k => `<span class="stamp ${SEV_STAMP[k]}">${counts[k]} ${SEVERITY_LABEL[k].toLowerCase()}</span>`).join('')}</div>`
       : '<p class="calm">Nothing needs attention right now.</p>'}
-    ${ai && (ai.summary || ai.dropped) ? `<div class="ai ai-sum"><span class="aitag">AI</span>${ai.summary ? `<p>${esc(ai.summary)}</p>` : ''}${ai.dropped ? `<p class="fnote">${ai.dropped === 1 ? '1 AI note was left out because it quoted a number that is not in your records.' : `${ai.dropped} AI notes were left out because they quoted numbers that are not in your records.`}</p>` : ''}</div>` : ''}
-    <div class="row"><button type="button" id="explain" ${sorted.length ? '' : 'disabled'}>${ai ? 'Refresh AI comments' : 'Add AI comments'}</button></div>
-    <p class="mut small">This sends only the titles and details shown below to Gemini. It is not a mechanic: confirm brake, hybrid and safety work with your workshop.</p>
+    ${ai && (ai.summary || ai.dropped) ? `<div class="ai ai-sum"><span class="aitag">AI</span>${ai.summary ? `<b class="aititle">What to do</b><p>${esc(ai.summary)}</p>` : ''}${ai.dropped ? `<p class="fnote">${ai.dropped === 1 ? '1 AI note was left out because it quoted a number that is not in your records.' : `${ai.dropped} AI notes were left out because they quoted numbers that are not in your records.`}</p>` : ''}</div>` : ''}
+    <div class="row"><button type="button" id="explain" ${sorted.length ? '' : 'disabled'}>${ai ? 'Refresh advice' : 'Get advice'}</button></div>
     <p class="err" id="ai-msg"></p>
     <ul class="facts-list">${sorted.map(f => factHtml(f, ai)).join('')}</ul>
     ${hidden.length ? `
@@ -403,7 +413,6 @@ function paintAdvice(view) {
         <ul class="hidden-list">${hidden.map(h => `
           <li><div><b>${esc(h.title)}</b><span>${h.status === 'done' ? `Marked done on ${niceDate(h.since)}` : 'Marked not relevant'}</span></div>
           <button type="button" class="ghost sm" data-restore="${esc(h.key)}">Restore</button></li>`).join('')}</ul>
-        <p class="mut small">Not relevant stays hidden until the situation changes. Done hides an item for 30 days, or until it changes.</p>
       </details>` : ''}`;
 
   $('#hidden-facts')?.addEventListener('toggle', e => { state.hiddenOpen = e.target.open; });
@@ -430,7 +439,7 @@ function paintAdvice(view) {
   $('#explain').onclick = async () => {
     const btn = $('#explain');
     btn.disabled = true;
-    btn.textContent = 'Asking Gemini…';
+    btn.textContent = 'Thinking…';
     $('#ai-msg').textContent = '';
     try {
       const facts = sorted.slice(0, 20).map(f => ({
@@ -442,16 +451,16 @@ function paintAdvice(view) {
       paintAdvice(view);
     } catch (e) {
       $('#ai-msg').textContent = e.message === 'Unknown mode'
-        ? 'Redeploy the gemini function to get AI comments. Your facts above do not need it.' : e.message;
+        ? 'Redeploy the gemini function to get advice. The facts above do not need it.' : e.message;
       btn.disabled = false;
-      btn.textContent = ai ? 'Refresh AI comments' : 'Add AI comments';
+      btn.textContent = ai ? 'Refresh advice' : 'Get advice';
     }
   };
 }
 const ai_explain = facts => ai.explain(facts, { make: state.vehicle.make, model: state.vehicle.model, year: state.vehicle.year });
 
 async function viewAdvice(view) {
-  view.innerHTML = '<h1>Advice</h1><p class="sum">Checking your records…</p>';
+  view.innerHTML = '<h1>Advice</h1><p class="mut">Loading…</p>';
   state.advData = await loadAdviceData();
   // Feedback for situations that no longer exist is dropped, so a problem that returns next year is not pre-dismissed.
   const stale = staleFeedbackKeys(adviceModel().all, state.advData.feedback);
