@@ -5,7 +5,7 @@
 //   key = stable identity ("svc:brake"), fp = fingerprint of the situation. Feedback is remembered per
 //   key and stays valid only while fp is unchanged, so a dismissed item returns if things get worse.
 import { itemsOf, OPTS, label } from './models.js';
-import { ruleStatus } from './strategies.js';
+import { ruleOutlook } from './usage.js';
 import { monthLong, niceDate as nice } from './util.js';
 
 const n0 = v => Number(v).toLocaleString('en-US');
@@ -31,11 +31,11 @@ function lastVisitWith(maintenance, cats) {
   return best;
 }
 
-// ---------- services (from the reminder_status view) ----------
-function serviceFacts(rem, maintenance) {
+// ---------- services (from the reminder_status view, dated with the usage estimate when there is one) ----------
+function serviceFacts(rem, maintenance, usage, today) {
   const out = [], never = [];
   for (const r of rem) {
-    const s = ruleStatus(r);
+    const s = ruleOutlook(r, { usage, today });
     if (s.level === 'never') { never.push(r.title); continue; }
     if (s.level === 'ok') continue;
     const last = lastVisitWith(maintenance, [r.category]);
@@ -47,6 +47,11 @@ function serviceFacts(rem, maintenance) {
       if (r.days_remaining != null && r.days_remaining < 0) parts.push(dayword(-r.days_remaining));
       out.push({ key: `svc:${r.category}`, fp: 'overdue', kind: 'service', severity: 'high', title: `${r.title} is overdue`,
         detail: `${parts.join(' and ')} past due. ${lastDone}`.trim(), evidence });
+    } else if (s.basis === 'usage' && s.dueIn != null) {
+      const assume = s.by === 'km' ? `, assuming about ${n0(Math.round(usage.kmPerDay))} km a day` : '';
+      out.push({ key: `svc:${r.category}`, fp: 'soon', kind: 'service', severity: 'medium',
+        title: `${r.title} is due ${s.dueIn === 0 ? 'now' : `in ${dayword(s.dueIn)}`}`,
+        detail: `${s.text}${assume}. ${lastDone}`.trim(), evidence });
     } else {
       const left = [];
       if (r.km_remaining != null && r.km_remaining <= 500) left.push(`${n0(r.km_remaining)} km`);
@@ -60,6 +65,23 @@ function serviceFacts(rem, maintenance) {
       title: `${never.length} service ${never.length === 1 ? 'interval has' : 'intervals have'} no record yet`,
       detail: `${never.slice(0, 6).join(', ')}${never.length > 6 ? ` and ${never.length - 6} more` : ''}. Log the last time each was done so the reminders can work.`,
       evidence: [] });
+  }
+  return out;
+}
+
+// ---------- the usage estimate itself ----------
+function usageFacts({ usage, rem, fuel, maintenance }) {
+  if (!usage) return [];
+  const out = [];
+  if (usage.confidence === 'none' && rem.length && fuel.length + maintenance.length > 0) {
+    out.push({ key: 'usage_none', fp: 'none', kind: 'data', severity: 'low', title: 'Not enough odometer readings to predict due dates',
+      detail: `Only ${usage.n} ${usage.n === 1 ? 'reading' : 'readings'} usable so far. Log refills with the odometer for about two weeks and due dates will appear.`, evidence: [] });
+  }
+  const sh = usage.shift;
+  if (sh && Math.abs(sh.pct) >= 40 && Math.abs(sh.recent - sh.prior) >= 10) {
+    const more = sh.pct > 0;
+    out.push({ key: 'usage_shift', fp: more ? 'more' : 'less', kind: 'data', severity: 'info', title: `You are driving ${more ? 'more' : 'less'} than usual`,
+      detail: `About ${n0(Math.round(sh.recent))} km a day over the last 30 days, against ${n0(Math.round(sh.prior))} km a day before that. Due dates move ${more ? 'earlier' : 'later'}.`, evidence: [] });
   }
   return out;
 }
@@ -216,12 +238,12 @@ function duplicateFacts({ fuel, maintenance, expenses, incidents }) {
   }));
 }
 
-// d = { today, odometer, eco, rem, docs, fuel, maintenance, expenses, incidents, monthly }
+// d = { today, odometer, usage, eco, rem, docs, fuel, maintenance, expenses, incidents, monthly }
 export function computeFacts(d) {
   const x = { ...d, eco: d.eco ?? [], rem: d.rem ?? [], docs: d.docs ?? [], fuel: d.fuel ?? [], maintenance: d.maintenance ?? [],
     expenses: d.expenses ?? [], incidents: d.incidents ?? [], monthly: d.monthly ?? [] };
   return [
-    ...serviceFacts(x.rem, x.maintenance), ...docFacts(x.docs, x.today), ...economyFacts(x), ...spendFacts(x),
+    ...serviceFacts(x.rem, x.maintenance, x.usage, x.today), ...usageFacts(x), ...docFacts(x.docs, x.today), ...economyFacts(x), ...spendFacts(x),
     ...priceFacts(x.fuel), ...gapFacts(x.fuel, x.today), ...duplicateFacts(x),
   ].sort((a, b) => SEV[a.severity] - SEV[b.severity] || KINDS.indexOf(a.kind) - KINDS.indexOf(b.kind) || a.title.localeCompare(b.title));
 }
