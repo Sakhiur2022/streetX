@@ -154,6 +154,15 @@ export const db = {
   reminders: vid => ok(sb.from('reminder_status').select('*').eq('vehicle_id', vid)),
   monthly: vid => ok(sb.from('monthly_costs').select('*').eq('vehicle_id', vid).order('month', { ascending: false }).limit(1000)),
 
+  // Every odometer reading from every log. If migration 004 has not been run, predictions just switch off.
+  async odometerReadings(vid) {
+    try {
+      const rows = await ok(sb.from('odometer_readings').select('read_on,odometer_km').eq('vehicle_id', vid)
+        .order('read_on', { ascending: false }).limit(600));
+      return [...rows].reverse();
+    } catch { return []; }
+  },
+
   // ---- advice feedback ("Done" / "Not relevant") ----
   feedback: vid => ok(sb.from('advice_feedback').select('*').eq('vehicle_id', vid)),
   setFeedback: (vid, key, fp, status, snapshot = {}) => ok(sb.from('advice_feedback').upsert(
