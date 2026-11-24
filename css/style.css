@@ -372,3 +372,9 @@ button.chip.ev { min-height: 36px; padding: 0 12px; font-size: 14px; }
 .hidden-list { list-style: none; margin: 0; padding: 0; }
 .hidden-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px dashed var(--rule); }
 .hidden-list span { display: block; color: var(--ink2); font-size: 14px; }
+
+/* usage estimate (km per day) on the intervals page, and the AI "what to do" heading */
+.usage { margin: 0 0 14px; padding: 10px 12px; background: var(--card); border: var(--edge); border-radius: 8px; box-shadow: var(--shadow); }
+.usage b { display: block; font: 800 26px/1.1 var(--display); }
+.usage span { color: var(--ink2); }
+.aititle { margin-left: 8px; font: 700 19px var(--display); }
