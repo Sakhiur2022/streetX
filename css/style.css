@@ -378,3 +378,40 @@ button.chip.ev { min-height: 36px; padding: 0 12px; font-size: 14px; }
 .usage b { display: block; font: 800 26px/1.1 var(--display); }
 .usage span { color: var(--ink2); }
 .aititle { margin-left: 8px; font: 700 19px var(--display); }
+
+/* Ask: chat bubbles, charts and tables inside answers */
+.starters { display: grid; gap: 8px; margin: 6px 0 14px; }
+.starters button { justify-content: flex-start; text-align: left; min-height: 48px; font-weight: 500; }
+.chat { display: grid; gap: 12px; margin: 8px 0 16px; }
+.msg { padding: 10px 12px; border: var(--edge); border-radius: 8px; overflow-wrap: anywhere; }
+.msg p { margin: 6px 0 0; }
+.msg.me { justify-self: end; max-width: 88%; color: var(--manila); background: var(--ink); border-color: var(--ink); }
+.msg.bot { background: var(--card); box-shadow: var(--shadow); }
+.msg.unverified { border-style: dashed; }
+.msg.err-msg { border-color: var(--brick); color: var(--brick); box-shadow: none; font-weight: 600; }
+.checked { color: var(--ink2); font-size: 13px; }
+.askbar { position: sticky; bottom: calc(var(--nav-h) + env(safe-area-inset-bottom)); z-index: 5; display: flex; gap: 8px; padding: 10px 0; background: var(--manila); border-top: 2px dashed var(--rule); }
+.askbar input { flex: 1; min-width: 0; margin: 0; }
+.vis { margin: 10px 0 0; padding: 8px 0 0; border-top: 2px dashed var(--rule); }
+.vis figcaption { font: 700 18px var(--display); }
+.hbars { display: grid; gap: 6px; margin-top: 6px; }
+.hb { display: grid; grid-template-columns: 62px 1fr auto; align-items: center; gap: 8px; font-size: 14px; }
+.hb-l { color: var(--ink2); }
+.hb-bar { height: 18px; border: var(--edge); border-radius: 4px; background: var(--manila); overflow: hidden; }
+.hb-bar i { display: block; height: 100%; background: var(--teal); }
+.vaxis { display: flex; justify-content: space-between; gap: 8px; color: var(--ink2); font-size: 13px; }
+.vis table { font-size: 14px; }
+.vis td:nth-child(2) { white-space: normal; min-width: 140px; }
+button.tbtn { min-height: 32px; padding: 0; color: var(--teal); font-weight: 600; }
+@media (min-width: 860px) { .askbar { bottom: 0; } }
+
+/* Ask page: the input bar sits at the bottom even when the chat is short */
+#view.on-ask { padding-bottom: calc(var(--nav-h) + 8px + env(safe-area-inset-bottom)); }
+.askpage { display: flex; flex-direction: column; min-height: calc(100dvh - 78px - env(safe-area-inset-top) - var(--nav-h) - 8px - env(safe-area-inset-bottom)); }
+.askmain { flex: 1; }
+.msg { scroll-margin-top: calc(70px + env(safe-area-inset-top)); }
+@media (min-width: 860px) { #view.on-ask { padding-bottom: 28px; } .askpage { min-height: calc(100dvh - 56px); } .msg { scroll-margin-top: 20px; } }
+
+/* numbers inside answer tables must never split mid-number */
+.vis th, .vis td { overflow-wrap: normal; word-break: normal; }
+.vis td:last-child, .vis td:nth-child(3) { white-space: nowrap; }
