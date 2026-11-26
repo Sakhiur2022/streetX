@@ -51,6 +51,7 @@ export const ai = {
     return callGemini({ mode: 'extract', kind, mime_type: blob.type || file.type, image_base64: data });
   },
   explain: (facts, car) => callGemini({ mode: 'explain', facts, car }),
+  ask: (messages, facts, car, today) => callGemini({ mode: 'ask', messages, facts, car, today }),
 };
 
 export const db = {
