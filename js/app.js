@@ -9,14 +9,15 @@ import { esc, bdt, dateParts, monthLong, niceDate } from './util.js';
 import { icon } from './icons.js';
 import { gauge, odometer, sparkline, spendBars } from './viz.js';
 import { detailHtml } from './detail.js';
+import { answerHtml } from './chat.js';
 import { computeFacts, outcomeFacts, applyFeedback, staleFeedbackKeys, countBySeverity, signature, severityRank, SEVERITY_LABEL } from './facts.js';
 
 const $ = s => document.querySelector(s);
-const state = { vehicle: null, advice: null };
+const state = { vehicle: null, advice: null, chat: null, askFacts: null, asking: false };
 
 // [key, nav label, icon, secondary?]  Secondary pages live behind "More" on phones.
 const PAGES = [
-  ['home', 'Home', 'home'], ['fuel', 'Fuel', 'fuel'], ['maintenance', 'Service', 'wrench'], ['document', 'Docs', 'doc'],
+  ['home', 'Home', 'home'], ['fuel', 'Fuel', 'fuel'], ['maintenance', 'Service', 'wrench'], ['document', 'Docs', 'doc'], ['ask', 'Ask', 'chat'],
   ['expense', 'Expenses', 'receipt', true], ['incident', 'Incidents', 'alert', true],
   ['reminders', 'Service intervals', 'clock', true], ['advice', 'Advice', 'spark', true],
 ];
@@ -97,10 +98,13 @@ async function route() {
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.dataset.p === page));
   $('#more')?.classList.toggle('on', PAGES.some(p => p[0] === page && p[3]));
   const view = $('#view');
+  view.classList.toggle('on-ask', page === 'ask');
+  if (page !== 'ask') { state.chat = null; state.askFacts = null; state.asking = false; } // a chat is forgotten when you leave the page
   try {
     if (page === 'home') await viewHome(view);
     else if (page === 'reminders') await viewReminders(view);
     else if (page === 'advice') await viewAdvice(view);
+    else if (page === 'ask') await viewAsk(view);
     else if (TYPES[page]) await viewLog(view, page);
     else location.hash = 'home';
   } catch (e) { view.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
@@ -404,7 +408,7 @@ function paintAdvice(view) {
       ? `<div class="statusrow">${['high', 'medium', 'low', 'info'].filter(k => counts[k]).map(k => `<span class="stamp ${SEV_STAMP[k]}">${counts[k]} ${SEVERITY_LABEL[k].toLowerCase()}</span>`).join('')}</div>`
       : '<p class="calm">Nothing needs attention right now.</p>'}
     ${ai && (ai.summary || ai.dropped) ? `<div class="ai ai-sum"><span class="aitag">AI</span>${ai.summary ? `<b class="aititle">What to do</b><p>${esc(ai.summary)}</p>` : ''}${ai.dropped ? `<p class="fnote">${ai.dropped === 1 ? '1 AI note was left out because it quoted a number that is not in your records.' : `${ai.dropped} AI notes were left out because they quoted numbers that are not in your records.`}</p>` : ''}</div>` : ''}
-    <div class="row"><button type="button" id="explain" ${sorted.length ? '' : 'disabled'}>${ai ? 'Refresh advice' : 'Get advice'}</button></div>
+    <div class="row"><button type="button" id="explain" ${sorted.length ? '' : 'disabled'}>${ai ? 'Explain again' : 'Explain these'}</button></div>
     <p class="err" id="ai-msg"></p>
     <ul class="facts-list">${sorted.map(f => factHtml(f, ai)).join('')}</ul>
     ${hidden.length ? `
@@ -439,7 +443,7 @@ function paintAdvice(view) {
   $('#explain').onclick = async () => {
     const btn = $('#explain');
     btn.disabled = true;
-    btn.textContent = 'Thinking…';
+    btn.textContent = 'Explaining…';
     $('#ai-msg').textContent = '';
     try {
       const facts = sorted.slice(0, 20).map(f => ({
@@ -451,9 +455,9 @@ function paintAdvice(view) {
       paintAdvice(view);
     } catch (e) {
       $('#ai-msg').textContent = e.message === 'Unknown mode'
-        ? 'Redeploy the gemini function to get advice. The facts above do not need it.' : e.message;
+        ? 'Redeploy the gemini function to get explanations. The facts above do not need it.' : e.message;
       btn.disabled = false;
-      btn.textContent = ai ? 'Refresh advice' : 'Get advice';
+      btn.textContent = ai ? 'Explain again' : 'Explain these';
     }
   };
 }
@@ -469,6 +473,72 @@ async function viewAdvice(view) {
     state.advData.feedback = state.advData.feedback.filter(f => !stale.includes(f.fact_key));
   }
   paintAdvice(view);
+}
+
+// ---------- Ask: questions about your own records, answered with read-only tools ----------
+const STARTERS = ['How much did I spend on fuel this year?', 'When was my last oil change?', 'Which month cost me the most?', 'What is most urgent right now?'];
+
+async function askFacts() {
+  state.advData = await loadAdviceData();
+  return adviceModel().visible.slice(0, 20).map(f => ({ id: f.key, severity: f.severity, title: f.title, detail: f.detail }));
+}
+
+// Opens any record in the same read-only sheet used by the lists.
+async function openRecord(type, id) {
+  const v = state.vehicle.id;
+  try {
+    const [rows, att] = await Promise.all([db.list(type, v, 500), db.attachmentMap(v, type)]);
+    const row = rows.find(r => r.id === id);
+    if (!row) return toast('That entry no longer exists');
+    openDetail(type, row, rows, att[id] ?? []);
+  } catch (e) { toast(e.message); }
+}
+
+function paintAsk(view) {
+  const chat = state.chat;
+  view.innerHTML = `
+    <div class="askpage"><div class="askmain">
+    <h1>Ask</h1>
+    ${chat.length ? '' : `<div class="starters">${STARTERS.map(q => `<button type="button" class="ghost" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>`}
+    <div class="chat">${chat.map(m => m.role === 'user' ? `<div class="msg me">${esc(m.text)}</div>`
+      : m.pending ? '<div class="msg bot"><span class="aitag">AI</span><p class="mut">Looking through your records…</p></div>' : answerHtml(m)).join('')}</div>
+    </div>
+    <form class="askbar" id="askf">
+      <input id="q" type="text" placeholder="Ask in English or Bangla" autocomplete="off" enterkeyhint="send" maxlength="500" aria-label="Your question" ${state.asking ? 'disabled' : ''}>
+      <button id="send" ${state.asking ? 'disabled' : ''}>Ask</button>
+    </form></div>`;
+  view.querySelectorAll('[data-q]').forEach(b => b.onclick = () => sendAsk(view, b.dataset.q));
+  view.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => { const [type, ...rest] = b.dataset.ev.split(':'); openRecord(type, rest.join(':')); });
+  $('#askf').onsubmit = e => { e.preventDefault(); sendAsk(view, $('#q').value); };
+  // Bring the start of the newest answer into view (the end would sit behind the input bar).
+  const bubbles = view.querySelectorAll('.chat > .msg');
+  (chat.at(-1)?.pending ? bubbles[bubbles.length - 2] : bubbles[bubbles.length - 1])?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+}
+
+async function sendAsk(view, text) {
+  text = String(text ?? '').trim();
+  if (!text || state.asking) return;
+  const chat = state.chat;
+  chat.push({ role: 'user', text }, { role: 'model', pending: true });
+  state.asking = true;
+  paintAsk(view);
+  let reply;
+  try {
+    state.askFacts ??= await askFacts();
+    const messages = chat.filter(m => !m.pending && !m.error).slice(-11).map(m => ({ role: m.role, text: m.text }));
+    reply = { role: 'model', ...(await ai.ask(messages, state.askFacts, { make: state.vehicle.make, model: state.vehicle.model, year: state.vehicle.year }, today())) };
+  } catch (e) {
+    reply = { role: 'model', error: true, text: e.message === 'Unknown mode' ? 'Redeploy the gemini function to use Ask.' : e.message };
+  }
+  if (state.chat !== chat) return; // you left the page while it was thinking: drop the answer
+  chat[chat.findIndex(m => m.pending)] = reply;
+  state.asking = false;
+  paintAsk(view);
+}
+
+async function viewAsk(view) {
+  state.chat ??= [];
+  paintAsk(view);
 }
 
 // ---------- shared form flow: render -> validate -> save -> upload -> notify ----------
